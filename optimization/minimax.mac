@@ -1,0 +1,257 @@
+minimax(x, f, low, high, var) :=
+  block([deg : length(x) - 1,
+         p, poly],
+    /* ratinterpol will give us the initial polynomial */
+    p : map(lambda([u], [u,apply(f,[u])]), x),
+    poly : ratinterpol(p, deg, 'varname = var),
+    draw2d(explicit(poly-f(var),var,low,high),
+           point_size=3,
+           points(map(lambda([u],[u[1],u[2]-f(u[1])]), p))),
+    poly);
+
+find_coef(control_points, fval, var, type) :=
+  block([deg : length(control_points) - 2,
+         m, p, err],
+    m : vandermonde_matrix(makelist(control_points[k], k, 1, deg + 1)),
+    m : addrow(m, cons(1, makelist(control_points[deg + 2], k, 1, deg))),
+    if type = 'abs
+      then
+        m : addcol(m, makelist((-1)^k, k, 0, deg + 1))
+      else
+        m : addcol(m, makelist((-1)^k*abs(fval[k+1]), k, 0, deg + 1)),
+    p : bfloat(first(transpose(first(linsolve_by_lu(m, bfloat(fval), 'floatfield))))),
+    err : last(p),
+    p : apply("+", map(lambda([c, k], c*var^k), p, makelist(k,k,0,deg))),
+    [err, p]);
+
+relerr(x, y) := (x-y)/abs(y);
+
+show_error_curve(x, p, f, limits, var, type) :=
+  block([low : limits[1],
+         high : limits[2],
+         pts],
+    if type = 'abs
+    then
+      (pts : map(lambda([u], [u, subst([var=u],p)-subst([var=u], f)]), x),
+       draw2d(explicit(p-f,var,low,high),
+              point_size = 3,
+              user_preamble = "set grid",
+              title = "Absolute error",
+              points(pts)))
+    else
+      (pts : map(lambda([u], [u, relerr(subst([var=u],p), subst([var=u], f))]), x),
+       draw2d(explicit(relerr(p,f),var,low,high),
+              point_size = 3,
+              user_preamble = "set grid",
+              title = "Relative error",
+              points(pts)))
+  );
+
+argmin(x) :=
+  block([best : x[1], len : length(x), index : 1],
+    for k : 2 thru len
+      do
+        if is(x[k] < best)
+          then
+            (best : x[k], index : k),
+    [index, best]);
+
+argmax(x) :=
+  block([best : x[1], len : length(x), index : 1],
+    for k : 2 thru len
+      do
+        if is(x[k] > best)
+          then
+            (best : x[k], index : k),
+    [index, best]);
+
+
+find_extrema(poly, f, limit, nsamples, type, var) :=
+  block([samples : bfloat(makelist(limit[1] + (limit[2]-limit[1])/nsamples * k,
+                                   k, 0, nsamples-1)),
+        fval, worst, worst_index],
+    /* Create a grid and find the extremum */
+    if type = 'abs
+    then
+      fval : map(lambda([u], abs(subst([var=u], poly) - apply(f,[u]))), samples)
+    else
+      fval : map(lambda([u], abs(relerr(subst([var=u], poly), apply(f, [u])))), samples),
+
+    fval : bfloat(fval),
+    worst : fval[1],
+    worst_index : 1,
+
+    worst_index : argmax(fval)[1],
+    [samples[worst_index], worst]
+    );
+
+find_minmax(f, var, x0, x1, x2, eps) :=
+  block([],
+    if is(abs(x2-x0) < eps) or is(abs(x1-x0) < eps)
+    then
+      x0
+    else
+      block([xcoord : [[x0, subst([var=x0], f)],
+                       [x1, subst([var=x1], f)],
+                       [x2, subst([var=x2], f)]],
+             quad, xpoint],
+        quad : bfloat(ratinterpol(xcoord, 2)),
+        if is(equal(coeff(quad,'x,2), 0))
+        then
+          x1
+        else
+          (xpoint : bfloat(-coeff(quad, 'x, 1)/(2*coeff(quad,'x,2))),
+           if is(xpoint < x1)
+           then
+             find_minmax(f, var, x0, xpoint, x1, eps)
+           else
+             find_minmax(f, var, x1, xpoint, x2, eps))
+        )
+);
+
+find_extrema2(poly, f, limit, nsamples, type, var) :=
+  block([samples : bfloat(makelist(limit[1] + (limit[2]-limit[1])/nsamples * k,
+                                   k, 0, nsamples-1)),
+        deg : hipow(poly, var),
+        fval, prevsign, roots],
+    /* Create a grid and find the extremum */
+    if type = 'abs
+    then
+      fval : map(lambda([u], signum(subst([var=u], poly) - apply(f,[u]))), samples)
+    else
+      fval : map(lambda([u], signum(relerr(subst([var=u], poly), apply(f, [u])))), samples),
+
+    /*
+     * Find the sign changes.  This should be 2 more than
+     * the degree of the polynomial.  Then find minimum or maximum
+     * in each interval, bracketed by the zeroes.
+     */
+    prevsign : fval[1],
+    roots : [],
+    for k : 2 thru nsamples
+      do
+        if is(notequal(fval[k],prevsign))
+        then
+          (roots : cons(samples[k], roots),
+           prevsign : fval[k]),
+
+    roots : reverse(roots),
+    control : [limit[1]],
+    print("roots = ", roots),
+    /* Find extremum in the interval */
+    for k : 1 thru deg + 2 step 2
+      do
+        block([point],
+          print("find max in ", roots[k], roots[k+1]),
+          point : find_minmax(poly, f, var,
+                              roots[k], (roots[k]+roots[k+1])/2, roots[k+1], 1d-8),
+          print("point = ", point),
+          control : cons(point, control)
+        ),
+    control
+    );
+
+find_extrema3(poly, f, limit, nsamples, type, var) :=
+  block([samples : bfloat(makelist(limit[1] + (limit[2]-limit[1])/nsamples * k,
+                                   k, 0, nsamples-1)),
+        deg : hipow(poly, var),
+        fval, prevsign, roots],
+    /* Create a grid and find the extremum */
+    if type = 'abs
+    then
+      fval : map(lambda([u], signum(subst([var=u], poly-f))), samples)
+    else
+      fval : map(lambda([u], signum(relerr(subst([var=u], poly), subst([var=u], f)))), samples),
+
+    /*
+     * Find the sign changes.  This should be 2 more than
+     * the degree of the polynomial.  Then find minimum or maximum
+     * in each interval, bracketed by the zeroes.
+     */
+    prevsign : fval[1],
+    roots : [],
+    for k : 2 thru nsamples
+      do
+        if is(notequal(fval[k],prevsign))
+        then
+          (roots : cons(samples[k], roots),
+           prevsign : fval[k]),
+
+    roots : reverse(roots),
+    control : [limit[1]],
+    print("roots = ", roots),
+    /* Find extremum in the interval */
+    for k : 1 thru length(roots)-1
+      do
+        block([point],
+          point : find_minmax(if type = 'abs then poly-f else relerr(poly, f), var,
+                              roots[k], (roots[k]+roots[k+1])/2, roots[k+1], 1d-10),
+	  print("k, point = ", k, point),
+          control : cons(point, control)
+        ),
+    control : cons(limit[2],control),
+    control : reverse(control),
+    print("extremum = ", control),
+    [control,
+     apply(max, map(lambda([u], if type = 'abs
+                                then
+                                  subst([var=u], abs(poly - f))
+                                else
+                                  subst([var=u], abs(relerr(poly, f)))),
+                    control))]
+    );
+
+exchange(x, val) :=
+  block([len : length(x)],
+    /* Find the point in x closest to val and replace it with val. */
+    index : argmin(map(lambda([u], abs(u-val)), x))[1],
+    if index = len
+    then
+      x[len-1] : val
+    elseif index = 0
+      then x[1] : val
+    else
+      x[index] : val,
+      
+    sort(x, "<")
+    );
+/*
+exchange(x, val) :=
+  block([len : length(x)],
+    /* Find the point in x closest to val and replace it with val. */
+    index : argmin(map(lambda([u], abs(u-val)), x))[1],
+    x[index] : val,
+      
+    sort(x, "<")
+    );
+*/
+minimax(x, f, limits, var, type, niter) :=
+  block([ratprint : false,
+         mapprint : false,
+         maperror : false,
+         low : limits[1],
+         high : limits[2],
+         len : length(x),
+         deg, res, pts],
+    deg : len - 2,
+    /*
+     * Solve the system of equations
+     *
+     * P(x[i]) + (-1)^i*E = f(x[i])
+     *
+     * where P(x) = sum(a[k]*x^k,k,0,deg)
+     */
+    print("x = ", x),
+    for k : 1 thru niter
+      do
+        (res : find_coef(x, map(lambda([u], subst([var=u], f)), x), var, type),
+         err : first(res),
+         p : second(res),
+         /* Plot it */
+         show_error_curve(x, p, f, limits, var, type),
+         maxerr : find_extrema3(p, f, limits, 100*deg, type, var),
+         x : maxerr[1],
+         print("x = ", x)
+        ),
+    [err, p, x]
+);
