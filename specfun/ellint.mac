@@ -1,0 +1,1531 @@
+/* -*- Mode: maxima -*- */
+/*
+  Elliptic integral package for Maxima by Raymond Toy.  Copyright
+  2001.
+  
+  References:  
+  [1] Abramowitz and Stegun.  
+  [2] Lawden, Elliptic Functions and Applications
+*/
+
+/*
+ * See http://mathforum.org/dr.math/faq/faq.cubic.equations.html
+ *
+ * Let the quartic be x^4 + a*x^3 + b*x^2 + c*x + d
+ *
+ * Apply substitution y = x - a/4 to get
+ *
+ *   y^4 + e*y^2 + f*y + g
+ *
+ * This can be expressed as the product of two quadratics:
+ *
+ *   (y^2 + h*y + j)*(y^2-h*y+g/j)
+ *
+ * By equating coefficients, we find that 
+ *
+ *    h^6 + 2*e*h^4 + (4^2-4*g)*h^2 - f^2 = 0
+ *
+ * Solve this for the real positive h^2.  Then 
+ *
+ *    2*j = e + h^2 - f/h
+ *
+ * We now have our quadratic factors.
+ */
+quartic_factor(p, x) :=
+  block([p1 : subst([x=x-coeff(p,x,3)/coeff(p,x,4)/4],p),
+         cubic, e, f, h, j],
+   p1:expand(p1),
+   e : coeff(p1,x,2)/coeff(p1,x,4),
+   f : (coeff(p1,x,1)/coeff(p1,x,4)),
+   cubic : x^3+2*e*x^2+(e^2-4*coeff(p1,x,0)/coeff(p1,x,4))*x
+           -f^2,
+   h: solve(cubic,x),
+   /* Find positive real root */
+   /*print("roots = ", h),*/
+   h: map(lambda([r],
+            block([z : expand(rectform(r))],
+              if is(equal(0,imagpart(rhs(z)))) then
+                realpart(rhs(z))
+              else false)),
+          h),
+   h : delete(false, h),
+   print("real roots = ", h),
+   h : sort(h, lambda([x,y], if asksign(ratsimp(x-y)) = 'pos then true else false)),
+   print("sorted roots = ", h),
+   h : h[1],
+   print("root = ", h),
+   if is(equal(0,h)) then
+     quartic_factor_1(p, x)                     
+   else
+     (j : (e + h - f/sqrt(h))/2,
+      expand([coeff(p,x,4)*subst([x=x+coeff(p,x,3)/coeff(p,x,4)/4],
+                                 (x^2+sqrt(h)*x+j)),
+              subst([x=x+coeff(p,x,3)/coeff(p,x,4)/4],
+                    (x^2-sqrt(h)*x+coeff(p1,x,0)/coeff(p1,x,4)/j))])))$
+
+/*
+ * Handle the case a*y^4 + b*y^2 + c
+ *
+ * Do this by solving a*z^2 + b*z + c.  Let the roots be z1 and z2.
+ * Then the factorization  we want is a*(y^2-z1)*(y^2-z2)
+ */
+                                   
+quartic_factor_1(p, x) :=
+  block([roots : solve(subst([x=sqrt(x)], p), x)],
+    /*print("roots = ", roots),*/
+    roots : map(rhs, roots),
+    /* Where should we put the constant multiplier?
+       Let's put it with the positive root */
+    if is(roots[1] >= 0) then
+      (coeff(p,x,4)*x^2-coeff(p,x,4)*roots[1])*(x^2-roots[2])
+    else
+      (x^2-roots[1])*(coeff(p,x,4)*x^2-coeff(p,x,4)*roots[2]));
+
+/*
+  Suppose we have integrate(1/y,t) where y^2 is a cubic or quartic
+  polynomial in t.  (In this development, we assume the coefficients
+  are real.)  We can always factor y^2 as a product of two quadratic
+  terms, s1 and s2 (or a quadratic and a linear term).
+
+  By using an appropriate substitution t = (x-p)/(x-q) (sometimes,
+  just t = x-p is adequate) we can convert both s1 and s2 into the
+  form a*t^2+b.  Let p1 = a1*x^2+b1 and p2 = a2*x^2+b2 where |a1| =
+  |a2| = 1.  Then
+
+    integrate(1/y,t) = integrate(c1/sqrt(p1*p2)/sqrt(c2), x)
+
+  where c1 and c2 are constants.
+
+  This routine computes the necessary information returns
+  [1]  the substitution needed
+  [2]  the constant c2
+  [3]  the first reduced quadratic term, p1
+  [4]  the second reduced quadratic term, p2
+  [5]  the constant c1
+ 
+ */
+ell_subst(s1, s2, var, newvar) :=
+block([a1 : coeff(expand(s1),var,2),
+       a2 : coeff(expand(s2),var,2)],
+  /*
+  print("a1 = ", a1),
+  print("a2 = ", a2),
+  */
+  if coeff(s1, var, 1) = 0 and coeff(s2, var, 1) = 0 then
+    /* We already have the sum of squares! */
+    [newvar = var,
+     abs(a1*a2),
+     (newvar^2*(a1/abs(a1)) + coeff(s1,var,0)/abs(a1)),
+     (newvar^2*(a2/abs(a2)) + coeff(s2,var,0)/abs(a2)), 
+     1]
+  else
+    block([q, lam_roots, lam1, lam2, alpha, beta, big_a2, big_b2, big_a1, big_b1],
+      /*
+        See A&S or Lawden for a complete description of this algorithm
+  
+        Write s1 - lam*s2.  We want this to be a perfect square so
+        find lam such that discriminant for this quadratic is zero.
+        Both values of lam should be real.  Otherwise the
+        transformation cannot be determined.  This means roots of s1
+        and s2 are all real.  Recombine the roots in a different way.
+
+        Having determined values of lam, we can write s1 - lam1*s2 =
+        A*(t-p)^2 and s1 - lam2*s2 = B*(t-q)^2.  Solve these for s1
+        and s2 to get 
+
+          s1 = A1*(t-p)^2 + B1*(t-q)^2
+          s2 = A2*(t-p)^2 + B2*(t-q)^2
+
+        The transformation we want is x = (t-p)/(t-q)
+
+      */
+      q : expand(s1 - lam*s2),
+      /*print(q),*/
+      lam_roots : solve(4*coeff(q,var,2)*coeff(q,var,0) - coeff(q,var,1)^2 = 0, lam),
+      if imagpart(rhs(lam_roots[1])) # 0 then
+        block(
+          print(lam_roots),
+          error("Elliptic integral reduction failed because roots are not real")
+	),
+      lam1 : rhs(lam_roots[1]),
+      lam2 : rhs(lam_roots[2]),
+      /*
+      print("s1-l1*s2 = ", expand(s1-lam1*s2)),
+      print("s1-l2*s2 = ", expand(s1 - lam2 * s2)),
+      */
+      alpha : solve(s1 - lam1 * s2 = 0, var),
+      /*print("alpha = ", alpha),*/
+      beta : solve(s1 - lam2 * s2 = 0, var),
+      /*print("beta = ", beta),*/
+      if length(alpha) > 0 and length(beta) > 0 then
+        block([algebraic:true],
+          alpha : ratsimp(rhs(alpha[1])),
+          beta : ratsimp(rhs(beta[1])),
+          /*
+          print("new alpha = ", alpha),
+          print("new beta = ", beta),
+          print("lambda 1 = ", lam1),
+          print("lambda 2 = " ,lam2),
+          print("lambda2 - lambda1 = ", ratsimp(lam2-lam1)),
+          print("a1 = ", a1),
+          print("a2 = ", a2),
+          */
+          big_a2 : ratsimp((a1 - lam1*a2)/(lam2 - lam1)),
+          big_b2 : ratsimp(- (a1 - lam2*a2)/(lam2 - lam1)),
+          big_a1 : ratsimp(a1 - lam1*a2 + lam1*big_a2),
+          big_b1 : ratsimp(lam1*big_b2),
+          /*
+          print("A2 = ", big_a2),
+          print("B2 = ", big_b2),
+          print("A1 = ", big_a1),
+          print("B1 = ", big_b1),
+          */
+	  /*
+	   * Return the substitution we used, the coefficient, 
+	   * and the product of quadratics that we want 
+	   */
+	  [newvar = (var - alpha)/(var - beta),
+           ratsimp(abs(big_a1*big_a2)),
+           ratsimp((big_a1*newvar^2+big_b1)/abs(big_a1)),
+           ratsimp((big_a2*newvar^2+big_b2)/abs(big_a2)),
+           ratsimp(1/(alpha-beta))]
+        )
+      else 
+      /* The case where alpha and beta are the same */
+        block(
+	  if length(alpha) > 0 then alpha : ratsimp(rhs(alpha[1])),
+	  if length(beta) > 0 then alpha : ratsimp(rhs(beta[1])),
+	  big_a2 : a2,
+	  big_b2 : expand(s1-a2*(var-alpha)^2),
+	  big_a1 : a1,
+	  big_b1 : expand(s2-a1*(var-alpha)^2),
+	  [newvar = (var - alpha),
+           abs(big_a1*big_a2),
+           (newvar^2+big_b1/abs(big_a1)),
+           (newvar^2+big_b2/abs(big_a2)),
+           1]
+	)
+  )
+)$
+
+/* Does what ell_subst does, but returns the integral */
+ell_subst_int(s1, s2, var, newvar) :=
+  block([info : ell_subst(s1, s2, var, newvar)],
+    [ratsimp(info[5]/sqrt(info[2]))*integrate(1/sqrt(info[3]*info[4]), newvar),
+     info[1]])$
+   
+ell_subst2(s1, s2, var, newvar) :=
+block([a1 : coeff(expand(s1),var,2),
+       a2 : coeff(expand(s2),var,2)],
+
+  if coeff(s1, var, 1) = 0 and coeff(s2, var, 1) = 0 then
+    /* We already have the sum of squares! */
+    [newvar = var,
+     abs(a1*a2),
+     (newvar^2*(a1/abs(a1)) + coeff(s1,var,0)/abs(a1)),
+     (newvar^2*(a2/abs(a2)) + coeff(s2,var,0)/abs(a2)), 
+     1]
+  else
+    block([q, lam_roots, lam1, lam2, alpha, beta, big_a2, big_b2, big_a1, big_b1],
+      /*
+        See A&S or Lawden for a complete description of this algorithm
+  
+        Write s1 - lam*s2.  We want this to be a perfect square so
+        find lam such that discriminant for this quadratic is zero.
+        Both values of lam should be real.  Otherwise the
+        transformation cannot be determined.  This means roots of s1
+        and s2 are all real.  Recombine the roots in a different way.
+
+        Having determined values of lam, we can write s1 - lam1*s2 =
+        A*(t-p)^2 and s1 - lam2*s2 = B*(t-q)^2.  Solve these for s1
+        and s2 to get 
+
+          s1 = A1*(t-p)^2 + B1*(t-q)^2
+          s2 = A2*(t-p)^2 + B2*(t-q)^2
+
+        The transformation we want is x = (t-p)/(t-q)
+
+      */
+      q : expand(s1 - lam*s2),
+      /*print(q),*/
+      lam_roots : solve(4*coeff(q,var,2)*coeff(q,var,0) - coeff(q,var,1)^2 = 0, lam),
+      if imagpart(rhs(lam_roots[1])) # 0 then
+        block(
+          print(lam_roots),
+          error("Elliptic integral reduction failed because roots are not real")
+	),
+      lam1 : rhs(lam_roots[1]),
+      lam2 : rhs(lam_roots[2]),
+      
+      print("s1-l1*s2 = ", expand(s1-lam1*s2)),
+      print("s1-l2*s2 = ", expand(s1 - lam2 * s2)),
+      
+      alpha : solve(s1 - lam1 * s2 = 0, var),
+      print("alpha = ", alpha),
+      beta : solve(s1 - lam2 * s2 = 0, var),
+      print("beta = ", beta),
+      if length(alpha) > 0 and length(beta) > 0 then
+        block([algebraic:true, q1, q2],
+          alpha : ratsimp(rhs(alpha[1])),
+          beta : ratsimp(rhs(beta[1])),
+          print("new alpha = ", alpha),
+          print("new beta = ", beta),
+          print("lambda 1 = ", lam1),
+          print("lambda 2 = " ,lam2),
+          print("lambda2 - lambda1 = ", ratsimp(lam2-lam1)),
+          print("a1 = ", a1),
+          print("a2 = ", a2),
+          q2 : (s1-lam1*s2) - (s1-lam2*s2),
+          q2 : q2/(lam2 - lam1),
+          print("q2 = ", q2),
+          q1 : (s1-lam1*s2) + lam1*q2,
+          print("q1 = ", q1),
+	  /*
+	   * Return the substitution we used, the coefficient, 
+	   * and the product of quadratics that we want 
+	   */
+	  [newvar = (var - alpha)/(var - beta),
+           ratsimp(abs(big_a1*big_a2)),
+           ratsimp(q1),
+           ratsimp(q2),
+           ratsimp(1/(alpha-beta))]
+        )
+      else 
+      /* The case where alpha and beta are the same */
+        block(
+	  if length(alpha) > 0 then alpha : ratsimp(rhs(alpha[1])),
+	  if length(beta) > 0 then alpha : ratsimp(rhs(beta[1])),
+	  big_a2 : a2,
+	  big_b2 : expand(s1-a2*(var-alpha)^2),
+	  big_a1 : a1,
+	  big_b1 : expand(s2-a1*(var-alpha)^2),
+	  [newvar = (var - alpha),
+           abs(big_a1*big_a2),
+           (newvar^2+big_b1/abs(big_a1)),
+           (newvar^2+big_b2/abs(big_a2)),
+           1]
+	)
+  )
+)$
+
+/*
+ * Identify the possible elliptic integrals of the first kind.
+ */
+
+ell_ident1(s1, s2, var, newvar) :=
+/*
+ * s1 = a0*var^2+a2 and s2 = b0*var^2+b2
+ *
+ * we assume |a0| = |b0| = 1
+ *
+ * We return two results.  The first is for the integral low to x.  The second
+ * is for x to high.
+ */
+block([a2 : ratcoef(s1, var, 0),
+       b2 : ratcoef(s2, var, 0)],
+  block([sign_a0 : asksign(ratcoef(s1, var, 2)),
+         sign_b0 : asksign(ratcoef(s2, var, 2)),
+         sign_a2 : asksign(a2),
+         sign_b2 : asksign(b2),
+         abs_a2 : abs(a2),
+         abs_b2 : abs(b2)],
+    /*	 
+    print(sign_a0),
+    print(sign_a2),
+    print(sign_b0),
+    print(sign_b2),
+    */
+    if sign_a0 = 'neg and sign_a2 = 'pos and sign_b0 = 'neg and sign_b2 = 'pos then 
+      /* (a2-t^2)*(b2-t^2) */
+      if asksign(abs_b2 - abs_a2) = 'pos then
+        ell_ident1(s2, s1, var, newvar)
+      else
+        /* A&S 17.4.45, integral 0 to x
+         * A&S 17.4.46, integral x to b */
+        [inverse_jacobi_sn(newvar/sqrt(abs_b2), abs_b2/abs_a2)/sqrt(abs_a2),
+         -inverse_jacobi_cd(newvar/sqrt(abs_b2), abs_b2/abs_a2)/sqrt(abs_a2)]
+    else if sign_a0 = 'pos and sign_a2 = 'pos and sign_b0 = 'neg and sign_b2 = 'pos then
+      /* (t^2 + a2)*(b2-t^2) */
+      /* A&S 17.4.51, integral 0 to x
+       * A&S 17.4.52, integral x to b */
+      [inverse_jacobi_sd(newvar*sqrt(abs_a2+abs_b2)/sqrt(abs_a2*abs_b2),
+                         abs_b2/(abs_a2+abs_b2))/sqrt(abs_a2+abs_b2),
+       -inverse_jacobi_cn(newvar/sqrt(abs_b2),
+                          abs_b2/(abs_a2+abs_b2))/sqrt(abs_a2+abs_b2)]
+    else if sign_a0 = 'pos and sign_a2 = 'neg and sign_b0 = 'pos and sign_b2 = 'neg then
+      /* (t^2 - a2)*(t^2-b2) */
+      if asksign(abs_b2 - abs_a2) = 'pos then
+        ell_ident1(s2, s1, var, newvar)
+      else
+        /* A&S 17.4.47, integral a to x
+         * A&S 17.4.48, integral x to inf */
+        [inverse_jacobi_dc(newvar/sqrt(abs_a2), abs_b2/abs_a2)/sqrt(abs_a2),
+         -inverse_jacobi_ns(newvar/sqrt(abs_a2), abs_b2/abs_a2)/sqrt(abs_a2)]
+    else if sign_a0 = 'pos and sign_a2 = 'neg and sign_b0 = 'pos and sign_b2 = 'pos then
+      /* (t^2 - a2)*(t^2+b2) */
+      [inverse_jacobi_nc(newvar/sqrt(abs_a2),
+                         abs_b2/(abs_a2+abs_b2))/sqrt(abs_a2+abs_b2),
+       -inverse_jacobi_ds(newvar/sqrt(abs_a2+abs_b2),
+                          abs_b2/(abs_a2+abs_b2))/sqrt(abs_a2 + abs_b2)]
+    else if sign_a0 = 'pos and sign_a2 = 'pos and sign_b0 = 'pos and sign_b2 = 'pos then
+      /* (t^2 + a2)*(t^2+b2) */
+      block([s : asksign(abs_a2 - abs_b2)],
+        if s = 'neg then
+          ell_ident1(s2, s1, var, newvar)
+        else
+          /* A&S 17.4.41, integral 0 to x
+           * A&S 17.4.42, integral x to inf */
+          [inverse_jacobi_sc(newvar/sqrt(abs_b2),
+                             (abs_a2-abs_b2)/abs_a2)/sqrt(abs_a2),
+           -inverse_jacobi_cs(newvar/sqrt(abs_a2),
+                              (abs_a2- abs_b2)/abs_a2)/sqrt(abs_a2)]
+      )
+    else if sign_a0 = 'neg and sign_a2 = 'pos and sign_b0 = 'pos and sign_b2 = 'neg then
+      /* (a2-t^2)*(t^2-b2) */
+      block(
+        if asksign(abs_a2-abs_b2) = 'pos then
+          /* A&S 17.4.43, integral b to x 
+           * A&S 17.4.44, integral x to a*/
+	  [inverse_jacobi_nd(newvar/sqrt(abs_b2),
+                              (abs_a2-abs_b2)/abs_a2)/sqrt(abs_a2),
+           -inverse_jacobi_dn(newvar/sqrt(abs_a2),
+                             (abs_a2-abs_b2)/abs_a2)/sqrt(abs_a2)]
+	else
+          /* 
+           * We have a2 < b2.  But (t^2-b2) >= 0 implies that t^2>=b2 
+           * and (a2-t^2) >= 0 implies t^2<= a2.  But no such t exists
+           * to make both terms positive.
+           */
+	  []
+      )
+    else if sign_a0 = 'pos and sign_a2 = 'pos and sign_b0 = 'pos and sign_b2 = neg then
+      /* (t^2+a2)*(t^2-b2) */
+      /* A&S 17.4.49, integral b to x
+       * A&S 17.4.50, integral x to inf */
+      [inverse_jacobi_nc(newvar/sqrt(abs_b2),
+                         abs_a2/(abs_a2+abs_b2))/sqrt(abs_a2 + abs_b2),
+       -inverse_jacobi_ds(newvar/sqrt(abs_a2+abs_b2),
+                          abs_a2/(abs_a2+abs_b2))/sqrt(abs_a2+abs_b2)]
+    else
+      ell_ident1(s2, s1, var, newvar)
+  )
+);
+
+/*
+ * Elliptic integral of the first kind.
+ *
+ * integrate(1/sqrt(s1*s2), var)
+ *
+ * where s1 and s2 are quadratics in var.  One of s1 or s2 may be
+ * linear, in case we have a cubic.
+ *
+ */
+ellint1(s1, s2, var, [limits]) :=
+block([subs : ell_subst(s1, s2, var, var)],
+  block([nlim : length(limits),
+         ss1 : subs[3],
+         ss2 : subs[4],
+         xfrm : subs[1],
+         val, z, pole],
+    val : ell_ident1(ss1, ss2, var, var),
+    /*print("xfrm = ", xfrm),*/
+    val : subs[5]/sqrt(subs[2])*subst(xfrm, val),
+    /*print("val = ", val),*/
+    if nlim = 2 then
+      limit(val, var, limits[2]) - limit(val, var, limits[1])
+    elseif nlim = 0 then
+      val
+    else                   
+      error("ellint1:  zero or two limits required")))$
+
+/*
+ * Some examples of ellint1.  These are taken from Lawden, Ch. 3.
+ *
+ * Ex 1:
+ *
+ * ellint1(2*x-x^2,4*x^2+9,x,0,2) -> 2/sqrt(15)*elliptic_kc(1/5)
+ *
+ * Ex 3:
+ * quartic_factor(1+t^2-2*t^4,t) -> (2-2*t^2)*(t^2+1/2)
+ *
+ * ellint1(2-2*t^2,t^2+1/2,t,0,x) ->
+ *    1/sqrt(3)*(elliptic_kc(2/3)-inverse_jacobi_cn(x,2/3))
+ *
+ *  = 1/sqrt(3)*inverse_jacobi_sd(sqrt(3)*x,2/3)
+ *
+ * Ex 4:
+ *
+ * ellint1(t^2+1,2*t^2-3*t+2,t,1,x)
+ *   = sqrt(2/7)*inverse_jacobi_sc(sqrt(7)*(x-1)/(x+1),6/7)
+ *
+ * We get the equivalent answer
+ *
+ *   sqrt(2/7)*inverse_jacobi_cs(1/sqrt(7)*(x+1)/(x-1), 6/7)
+ *     = sqrt(2/7)*elliptic_kc(6/7)-sqrt(2/7)*inverse_jacobi_sc((x+1)/(x-1),6/7)
+ *
+ * Ex 6:
+ *
+ * ellint1(1-t^2,t^2+1,t,x,1) -> 1/sqrt(2)*inverse_jacobi_cn(x,1/2)
+ *
+ * Ex 6:
+ * ellint1(t^2-1,t^2+1,t,1,x) -> 1/sqrt(2)*inverse_jacobi_cn(1/x,1/2)
+ *
+ * We get the equivalent answer 1/sqrt(2)*inverse_jacobi_nc(x,1/2)
+ *
+ * Ex 7
+ *
+ * ellint1(t-1,t^2+t+1,t,1,x) ->
+ *    3^(-3/4)*inverse_jacobi_cn((sqrt(3)+1-x)/(sqrt(3)-1+x), m)
+ * m = 1/2-sqrt(3)/4.
+ *
+ * We don't get this answer quite so easily.  Do get this:
+ *
+ * r : ellint1(t-1,t^2+t+1,t,1,x);
+ *
+ * ratsimp(radcan(sqrtdenest(r))),algebraic ->
+ *
+ * -3^(3/4)/3*inverse_jacobi_nc((t+sqrt(3)-1)/(t-sqrt(3)-1), m)
+ *
+ * m = (2-sqrt(3))/4
+ *
+ * This is equivalent to the above answer.
+ * 
+ */
+  
+
+/*
+ Let R(x,y) be a rational function of x and y where y^2 is a quartic or cubic.
+ 
+ Then the integral of R(x,y) wrt x is an elliptic function.
+
+ This function takes the rational function and converts it to
+ canonical form as a sum of elliptic integrals of the first, second,
+ and third kinds.
+
+ Let 
+ R(x,y) = P(x,y)/Q(x,y).
+
+          y*P(x,y)*Q(x,-y)
+        = ----------------
+          y*Q(x,y)*Q(x,-y)
+
+          M(x) + y*N(x)
+        = -------------
+              y*L(x)
+
+        = R1(x)/y + R2(x)
+
+ Returns a list of
+
+ [1] R2(x)
+ [2] R1(x)
+ [3] The result of ell_subst
+*/ 
+
+ellint_reduction_step1(rxy, x, y, s1, s2, u) :=
+block([p:ratnumer(rxy),
+       q:denom(rxy),
+       y2 : expand(s1 * s2),
+       top, bot, r1, r2, info],
+  /* See Lawden for a better description of the algorithm */
+
+  /*
+   * R(x,y) = P(x,y)/Q(x,y).
+   *
+   *          y*P(x,y)*Q(x,-y)
+   *        = ----------------
+   *          y*Q(x,y)*Q(x,-y)
+   *
+   *          M(x) + y*N(x)
+   *        = -------------
+   *              y*L(x)
+   *
+   * which is obtained by substituting the quartic or cubic for all
+   * powers of y greater than 1.
+   *
+   * Thus, R(x,y)  = R1(x)/y + R2(x)
+   */
+
+   /* top = y * P(x,y)*Q(x,-y) */
+   top : y*p*subst(-y,y,q),
+   /*print("top =", top),*/
+   /* Replace all powers of y^2 in top by the cubic or quartic. */
+   for k:1 thru quotient(hipow(top,y),2) do
+     block(
+       top : subst(y2^k, y^(2*k), top),
+       top : subst(y*y2^k, y^(2*k+1), top)
+     ),
+   /* bot = L(x) */
+   bot : q*subst(-y,y,q),
+   /*print("bot = ", bot),*/
+   for k:1 thru quotient(hipow(bot,y),2) do
+     block(
+       bot : subst(y2^k, y^(2*k), bot),
+       bot : subst(y*y2^k, y^(2*k+1), bot)
+     ),
+   /*
+   print("new top =", top),
+   print("new bot =", bot),
+   */
+   r1 : coeff(top,y,0),
+   r2 : coeff(top,y,1),
+   r1 : ratsimp(r1/bot),
+   r2 : ratsimp(r2/bot),
+
+   /*
+   print("Rational parts"),
+   print("r1 = ", r1),
+   print("r2 = ", r2),
+   */
+   /*
+    * Now that we have r1 and r2, we need to convert the
+    * quartic or cubic y^2 into a product of quadratics 
+    * without linear terms.
+    */
+  
+  info : ell_subst(s1, s2, x, u),
+  /* Compute the reduced form */
+  red : 1/sqrt(info[3])/sqrt(info[4]),
+  redcoef: factor(ratsimp(1/sqrt(info[2])*info[5])),
+  /*
+  print("coef"),
+  print(redcoef),
+  */
+  /* Apply the substitution to r1(x) */
+  /*r1 : ratsimp(ev(r1, solve(info[1], x))),*/
+  r1 : ratsimp(r1),
+  /*print("r1 = ", r1),*/
+  r1 : ratsimp(subst(solve(info[1],x), r1)),
+  /* Return the parts */
+  [r2, r1, info, redcoef]
+);
+
+/* Using ellint_reduction_step2 to convert R(x,y) into the form R1(x)/y +
+ * R2(x), we continue the reduction of the general elliptic integral.
+ *
+ * R2(x) is no problem.  We split R1(x) into R1(x) = R3(x^2)+x*R4(x^2)
+ *
+ * The integrals are R3(x^2)/y + x*R4(x^2)/y
+ *
+ * We return
+ *
+ * [1] integrate(R2(x),x)
+ * [2] x*R4(x^2)/y
+ * [3] R3(x^2)
+ * [4] the result from ell_subst
+ * [5] the fourth result from ellint_reduction_step1
+ */
+  
+ellint_reduction_step2(rxy, x, y, s1, s2, u) :=
+block([res : ellint_reduction_step1(rxy, x, y, s1, s2, u),
+       ans, ans2, r_e, r_o, r_s1, r_s2, f, r_coef],
+  /* The first part is a rational function of x.  We can
+   * integrate that directly
+   */
+  ans : integrate(res[1],x),
+  /* The second part, R1(x)/y needs to be split up.  We can do
+   * this by computing the even and odd parts of R1(x):
+   *
+   * R3(x^2) = (R1(x) + R1(-x))/2
+   * x*R4(x^2) = (R1(x) - R1(-x))/2
+   *
+   */
+  r_o : subst(-u, u, res[2]),
+  r_e : ratsimp((res[2] + r_o)/2),
+  r_o : ratsimp((res[2] - r_o)/2),
+  /*
+  print("r even = ", r_e),
+  print("r odd  = ", r_o),
+  */
+  /* The odd part is x*R4(x^2)/y.  This can be converted to
+   * a rational function via the substitution x^2 = u.
+   */
+  r_s1 : res[3][3],
+  r_s2 : res[3][4],
+  /*
+  print("r_s1 = ", r_s1),
+  print("r_s2 = ", r_s2),
+  */
+  f : res[3][5],
+  ans2 : f*r_o/sqrt(r_s1*r_s2),
+  r_e : ratsimp(r_e),
+  [ans, ans2, r_e, res[3], res[4]])$
+
+/*
+ * This is the main routine that reduces elliptic integrals to
+ * canonical form.
+ */
+ellint_reduction_step3(rxy, x, y, s1, s2, u) :=
+block([res : ellint_reduction_step2(rxy, x, y, s1, s2, u)],
+  block([r1 : res[1],
+         r2 : res[2],
+         r3 : res[3], ans],
+    /*
+     * To make the partial fraction expansion of R3(x^2)
+     * do what we want, change R3(x^2) to R3(x), do the expansion
+     * and then convert back to x^2.
+     */
+    /* print("res = ", res), */
+    r3 : subst(sqrt(u),u,r3),
+    r3 : partfrac(r3,u),
+    r3 : subst(u^2,u,r3),
+    /*
+    print("r1 = ", r1),
+    print("r1 = ", subst(['y=y], r1)),
+    print("r2 = ", r2),
+    print("r3 = ", r3),
+    */
+    /*
+     * Now look at each term of r3 and figure out what
+     * kind of elliptic integral we have and integrate it
+     */
+    ans : try_ellint(r3, res[4][3], res[4][4], u, res[4][1], x),
+    [integrate(subst(['y=y],r1),x),
+     integrate(r2,u),
+     ans,
+     res[5],
+     res[4]]))$
+
+/*
+ * Compute elliptic integral of the rational function R(x ,y)
+ * where y^2 = s1*s2, where s1 and s2 are quadratics in x (or one
+ * is quadratic and the second is linear.)
+ *
+ * This isn't complete yet.  It doesn't handle all cases of elliptic
+ * integrals of the second kind.
+ *
+ * Also, elliptic integrals of the second kind are returned as functions
+ * of elliptic_eu(u,m) = integrate(jacobi_dn(v,m)^2, v, 0, u)
+ *                     = integrate(sqrt((1-m*t^2)/(1-t^2)), t, 0, tau)
+ * where t = jacobi_sn(v,m) and tau = jacobi_sn(u, m)
+ *
+ * If you want the result in terms of elliptic_e, use make_elliptic_c.
+ */
+               
+ellintreduce(rxy, x, y, s1, s2, u) :=
+  block([res : ellint_reduction_step3(rxy, x, y, s1, s2, u)],
+    subst(res[5][1], res[1] + res[2] + res[4]*res[3]));
+
+/*
+ * Some examples of ellintreduce for integrals of the second kind
+ *
+ * assume(a>0,b>0,a>b,u>0)
+ *
+ * A&S 17.4.41
+ * factor(ellintreduce((t^2+a^2)/(t^2+b^2)/y,t,y,t^2+a^2,t^2+b^2,u))
+ * a/b^2*elliptic_eu(inverse_jacobi_sc(t/b,(a^2-b^2)/a^2), (a^2-b^2)/a^2)
+ *
+ * Matches expected value.
+ *
+ * A&S 17.4.42
+ * expand(factor(expand(ellintreduce((t^2+b^2)/(t^2+a^2)/y,t,y,t^2+a^2,t^2+b^2,u))))
+ * part(%,1)+factor(%-part(%,1))->
+ * elliptic_eu(inverse_jacobi_sc(t/b,-(b^2-a^2)/a^2),-(b^2-a^2)/a^2)/a
+ *  +(b-a)*(b+a)*t/(a^2*sqrt(t^2+a^2)*sqrt(t^2+b^2))$
+ *
+ * Not what was expected, but the derivative is correct.
+ *
+ * A&S 17.4.43
+ * radcan(ellintreduce(1/t^2/y,t,y,a^2-t^2,t^2-b^2,u));
+ * elliptic_eu(inverse_jacobi_nd(u/b,-(b^2-a^2)/a^2),-(b^2-a^2)/a^2)/(a*b^2)
+ *
+ * Ok.
+ *
+ * A&S 17.4.44
+ * expand(factor(ratsimp(ellintreduce(t^2/y,t,y,a^2-t^2,t^2-b^2,u))));
+ * a*elliptic_eu(inverse_jacobi_nd(u/b,1-b^2/a^2),1-b^2/a^2)
+ *   -sqrt(a^2-u^2)*sqrt(u^2-b^2)/u
+ *
+ * Appears correct; derivative looks correct.
+ *
+ * A&S 17.4.45
+ * factor(ellintreduce((a^2-t^2)/y,t,y,a^2-t^2,b^2-t^2,u));
+ * a*elliptic_eu(inverse_jacobi_sn(u/b,b^2/a^2),b^2/a^2)
+ *
+ * Ok.
+ *
+ * A&S 17.4.46
+ * a*(a^2-b^2)*map(factor,expand(ratsimp(ellintreduce(1/(a^2-t^2)/y,t,y,a^2-t^2,b^2-t^2,u))));
+ * expand(factor(expand(%))) ->
+ * t/a*sqrt(b^2-t^2)/sqrt(a^2-t^2) - elliptic_eu(inverse_jacobi_sn(t/b,b^2/a^2),b^2/a^2)
+ *
+ * This isn't the quite expected answer, but the derivative matches.
+ *
+ *
+ * A&S 17.4.47
+ * expand(factor(ellintreduce(t^2/(t^2-b^2)/y,t,y,t^2-a^2,t^2-b^2,u)));
+ * a/(a^2-b^2)*elliptic_eu(inverse_jacobi_dc(t/a,b^2/a^2),b^2/a^2)
+ *
+ * Matches.
+ *
+ * A&S 17.4.48
+ * expand(radcan(ellintreduce((t^2-b^2)/t^2/y,t,y,t^2-a^2,t^2-b^2,u)));
+ * elliptic_eu(inverse_jacobi_dc(u/a,b^2/a^2),b^2/a^2)/a
+ *   -b^2*sqrt(u-a)*sqrt(u+a)/(a^2*u*sqrt(u-b)*sqrt(u+b))$
+ *
+ * Seems to be ok.  factor(radcan(diff(%,u))) gives
+ * sqrt(u-b)*sqrt(u+b)/u^2/sqrt(u-a)/sqrt(u+a)
+ *
+ * A&S 17.4.49
+ * factor(ratsimp(ellintreduce((t^2+a^2)/t^2/y,t,y,t^2+a^2,t^2-b^2,u)));
+ * sqrt(b^2+a^2)*elliptic_eu(inverse_jacobi_nc(u/b,a^2/(b^2+a^2)),a^2/(b^2+a^2))
+ *    /b^2
+ *
+ * Ok.
+ *
+ * A&S 17.4.50
+ * factor(ellintreduce(t^2/(t^2+a^2)/y,t,y,t^2+a^2,b^2-t^2,u));
+ * -(elliptic_eu(inverse_jacobi_sd(sqrt(b^2+a^2)*t/(a*b),b^2/(b^2+a^2)),
+ *              b^2/(b^2+a^2))
+ *   -inverse_jacobi_sd(sqrt(b^2+a^2)*t/(a*b),b^2/(b^2+a^2)))$
+ *
+ * Not quite expected, but the derivative matches the integrand.
+ * 
+ * A&S 17.4.51
+ * ratsimp(ellintreduce(1/(t^2+a^2)/y,t,y,t^2+a^2,b^2-t^2,u));
+ * elliptic_eu(inverse_jacobi_sd(sqrt(b^2+a^2)*t/(a*b),b^2/(b^2+a^2)),
+ *             b^2/(b^2+a^2))
+ *  /(a^2*sqrt(b^2+a^2))$
+ *
+ * Matches
+ *
+ * A&S 17.4.52
+ * expand(factor(ellintreduce((t^2+a^2)/y,t,y,t^2+a^2,b^2-t^2,u)));
+ * factor(%-part(%,4))+part(%,4)
+ * ->
+ * sqrt(b^2+a^2)*elliptic_eu(inverse_jacobi_sd(sqrt(b^2+a^2)*u/(a*b),
+ *                                             b^2/(b^2+a^2)),b^2/(b^2+a^2))
+ *  -u*sqrt(b^2-u^2)/sqrt(u^2+a^2)$
+ *
+ * factor(diff(%,u)) ->
+ *   sqrt(u^2+a^2)/sqrt(b^2-u^2)
+ *
+ * = (u^2+a^2)/sqrt(u^2+a^2)/sqrt(b^2-u^2)
+ *
+ * Looks good.
+ */
+ 
+/*
+ * True if elliptic integral of the first kind
+ *
+ * Basically, this means e is not a function of u.
+ */
+id_type1(e,u) :=
+freeof(u, e)$
+
+/*
+ * True if elliptic integral of the second kind
+ *
+ * Basically, this means e is of the form c*u^n, where
+ * n is even.
+ */
+id_type2(e,u) :=
+block([n : hipow(e, u)],
+  evenp(n) and freeof(u, ratsimp(e/u^n)))$
+
+/*
+ * True if elliptic integral of the second kind
+ *
+ * Basically, this means e is of the form c/(a+b*u^2)^n
+ *
+ *
+ */
+
+id_type3(e,u) :=
+  block([match : id_type3_match(e, u)],
+    is(not equal(match, false)));
+
+try_ellint_1(r3, s1, s2, u, xfrm, x) :=
+  if id_type1(r3, u) then
+    r3 * ell_ident1(s1, s2, u, u)[1]
+  elseif id_type2(r3, u) then
+    block([n, c],
+      n : hipow(r3,u),
+      c : coeff(r3, u, n),
+      c * ellint2_recur(hipow(r3,u)/2, s1, s2, u))
+  elseif id_type3(r3, u) then
+    block([match : id_type3_match(r3,u),
+           a, b, c, n, g],
+      /*
+       * r3 = c*(a+b*u^2)^n
+       *    = c*b^n*(a/b + u^2)^n
+       */
+      [a, b, c, n] : match,
+      block([algebraic:true],
+        g : ratsimp(a/b)),
+      ratsimp(c*b^n)*ellint3_recur(g, -n, s1, s2, u, xfrm, x))
+  else
+    changevar('integrate(r3/sqrt(s1)/sqrt(s2),u), u - rhs(xfrm), x)$
+
+try_ellint(r3, s1, s2, u, xfrm, x) :=
+block([],
+  if atom(r3) or not is(equal(op(r3), "+")) then
+    try_ellint_1(r3, s1, s2, u, xfrm, x)
+  else
+    map(lambda([z],
+               try_ellint_1(z, s1, s2, u, xfrm, x)),
+             r3))$
+
+/*
+ * Lawden 3.3.33 gives
+ *
+ * diff(t^(2*m-1)*W) = (2*m-1)*t^(2*m-2)(A1*t^2+B1)*(A2*t^2+B2)/W
+ *     + t^(2*m)*(2*A1*A2*t^2 + A1*B2 + A2*B1)/W
+ *
+ * where W = sqrt((A1*t^2+B2)*(A2*t^2+B2))
+ *
+ * After expanding all of these out and collecting terms, we get
+ *
+ * diff(t^(2*m-1)*W)
+ *
+ *  = [(2*m-1)*B2^2*t^(2*m-2) + 2*m*(A2+A1)*B2*t^(2*m) + (2*m+1)*A1*A2*t^(2*m+2)]/W
+ *
+ * So
+ *
+ * t^(2*m-1)*W = (2*m-1)*B2^2*I(2*m-1) + 2*m*(A2+A1)*B2*I(2*m) + (2*m+1)*A1*A2*I(2*m+2)
+ *
+ * where I(m) = integrate(t^m/W,t)
+ *
+ * Thus I(2*m) can be finally expressed in terms of I(0) and I(2), and I(0) is
+ * an elliptic integral of the first kind.
+ *
+ */
+ellint2_recur(m, s1, s2, x) :=
+  if m = 0 then
+    ell_ident1(s1, s2, x, x)[1]
+  else if m = 1 then
+    ell_ident2(s1, s2, x, x)[1]
+  else if m > 1 then
+    block([a1 : coeff(s1,x,2), b1 : coeff(s1,x,0),
+           a2 : coeff(s2,x,2), b2 : coeff(s2,x,0),
+           W : sqrt(s1*s2)],
+      ratsimp(x^(2*m-3)*W/((2*m-1)*a1*a2))
+         - ratsimp(2*(m-1)*(a1*b2+a2*b1)/((2*m-1)*a1*a2))
+            *ellint2_recur(m-1, s1, s2, x)
+         - ratsimp((2*m-3)*b1*b2/((2*m-1)*a1*a2))
+            *ellint2_recur(m-2, s1, s2, x))
+  else 
+    block([a1 : coeff(s1,x,2), b1 : coeff(s1,x,0),
+           a2 : coeff(s2,x,2), b2 : coeff(s2,x,0),
+           W : sqrt(s1*s2)],
+      ratsimp(x^(2*m+1)*W/((2*m+1)*b1*b2))
+         - ratsimp(2*(m+1)*(a1*b2+a2*b1)/((2*m+1)*b1*b2))
+            * ellint2_recur(m+1, s1, s2, x)
+         - ratsimp((2*m+3)*a1*a2/((2*m+1)*b1*b2))
+            * ellint2_recur(m+2, s1, s2, x))$
+
+/*
+ * For elliptic integals of the third kind, the recursion is a bit more
+ * complicated.
+ *
+ * diff(t*(t^2+g)^(-n+1)*W, t) = (t^2+g)^(-n)/W*C(t^2)
+ *
+ * where C(t) is a cubic:
+ *    g*B2^2
+ *    - t*B2*(2*n*B2-3*B2-2*g*A2-2*g*A1)
+ *    - t^2*(2*n*A2*B2-4*A2*B2+2*n*A1*B2-4*A1*B2-3*g*A1*A2)
+ *    - t^3*(2*n-5)*A1*A2
+ *
+ * Rearrange C(t^2) as a cubic in t^2+g to get
+ *
+ *   a*(t^2+g)^3 + b*(t^2+g)^2 + c*(t^2+g) + d
+ *
+ * where
+ *
+ *   a = (5-2*n)*A1*A2
+ *   b = ((4-2*n)*A2+(4-2*n)*A1)*B2+g*(6*n-12)*A1*A2
+ *   c = (3-2*n)*B2^2+g*((4*n-6)*A2+(4*n-6)*A1)*B2+g^2*(9-6*n)*A1*A2
+ *   d = g*(2*n-2)*B2^2+g^2*((2-2*n)*A2+(2-2*n)*A1)*B2+g^3*(2*n-2)*A1*A2
+ *
+ * Then
+ *
+ * diff(t*(t^2+g)^(-n+1)*W)
+ *  = 1/W*[a*(t^2+g)^(-n+3) + b*(t^2+g)^(-n+2) + c*(t^2+g)^(-n+1) + d*(t^2+g)^(-n)]
+ *
+ *
+ * Thus,
+ *
+ * t*(t^2+g)^(-n+1)*W) =
+ *   a*J(n-3) + b*J(n-2) + c*J(n-1) + d*J(n)
+ *
+ * or
+ *
+ *  J(n) = 1/d*(t*(t^2+g)^(-n+1)*W - a*J(n-3) - b*J(n-2) - c*J(n-1))
+ *
+ * where J(n) = integrate((t^2+g)^(-n)/W, t)
+ *
+ * Applying this recursion, we can express J(n) in terms of J(1), J(0)
+ * and J(-1).  J(0) is an integral of the first kind, J(-1) is a sum of
+ * integrals of the first and second kinds, and
+ *
+ * J(1) = integrate(1/(t^2+g)/W, t)
+ */
+
+ellint3_recur(g, m, s1, s2, x, xfrm, orig) :=
+  if m = 0 then
+    ell_ident1(s1, s2, x, x)[1]
+  else if m = 1 then
+    ell_ident3(g, s1, s2, x, xfrm, orig)
+  else if m = -1 then
+    /* (t^2+g)/W = t^2/W + g/W, which are
+     * integral of the second kind and an integral of the first kind
+     */
+    ell_ident2(s1, s2, x, x)[1] + g * ell_ident1(s1, s2, x, x)[1]
+  else if m > 1 then
+    block([A1 : coeff(s1,x,2), B1 : coeff(s1,x,0),
+           A2 : coeff(s2,x,2), B2 : coeff(s2,x,0),
+           W : sqrt(s1*s2),
+           a, b, c, d],
+      a : (5-2*m)*A1*A2,
+      b : ((4-2*m)*A2+(4-2*m)*A1)*B2+g*(6*m-12)*A1*A2,
+      c : (3-2*m)*B2^2+g*((4*m-6)*A2+(4*m-6)*A1)*B2+g^2*(9-6*m)*A1*A2,
+      d : g*(2*m-2)*B2^2+g^2*((2-2*m)*A2+(2-2*m)*A1)*B2+g^3*(2*m-2)*A1*A2,
+      1/d*(x*(x^2+g)^(-m+1)*W
+           - a*ellint3_recur(g, m-3, s1, s2, x)
+           - b*ellint3_recur(g, m-2, s1, s2, x)
+           - c*ellint3_recur(g, m-1, s1, s2, x)))
+  else
+    error("Case m < -1 not handled yet");
+
+
+/*
+ * Let's derive the transformation of 
+ *
+ *   J(1) = integrate(1/(t^2+g)/W, t)
+ *
+ * In general, we have an integral of the form
+ *
+ * integrate((alpha + beta*sn(u)^2)/(gamma + mu*sn(u)^2), u)
+ *
+ * for the 12 different transformations.  From A&S 17.4.41-17.4.52, we know
+ * the transformation we should apply.  And the first column tells us what
+ * happens to 1/W*dt/dv because that's an elliptic integral of the first
+ * kind.  In fact, the resulting transformation is just the reciprocal of
+ * leading coefficient of the integral in the first column.  Then we just
+ * need to apply the transformation to the term 1/(t^2+g).
+ *
+ * Thus, 17.4.41 gives the transformation t = b*jacobi_sc(v, m), m = (a^2-b^2)/a^2.
+ * and 1/(t^2+g) -> (1-jacobi_sn(v,m)^2)/(g-(g-b^2)*jacobi_sn(v,m)^2)
+ *
+ * Finally, we get
+ *
+ * J(1) = 1/a*integrate((1-jacobi_sn(v,m)^2)/(g-(g-b^2)*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta = -1
+ * gamma = g
+ * mu = b^2-g
+ * ========================================
+ * 17.4.42:  t = a*jacobi_cs(v, m), m = (a^2-b^2)/a^2
+ *
+ * J(1) = 1/a*integrate(jacobi_sn(v,m)^2/(a^2+(g-a^2)*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 0
+ * beta = 1
+ * gamma = a^2
+ * mu = g-a^2
+ * ========================================
+ * 17.4.43: t = b*jacobi_nd(v, m), m = (a^2-b^2)/a^2
+ *
+ * J(1) = 1/a*integrate((a^2+(b^2-a^2)*jacobi_sn(v,m)^2)/(a^2*g+a^4 + (b^2-a^2)*jacobi_sn(v,m)^2),v)
+ *
+ * alpha = a^2
+ * beta = b^2-a^2
+ * gamma = a^2*g+a^4
+ * mu = b^2-a^2
+ * ========================================
+ * 17.4.44: t = b*jacobi_dn(v, m), m = (a^2-b^2)/a^2
+ *
+ * J(1) = 1/a*integrate(1/(a^2+g+(b^2-a^2)*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = 0
+ * gamma = a^2+g
+ * mu    = b^2-a^2
+ * ========================================
+ * 17.4.45: t = b*jacobi_sn(v, m), m = b^2/a^2
+ *
+ * J(1) = 1/a*integrate(1/(g+b^2*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = 0
+ * gamma = g
+ * mu    = b^2
+ * ========================================
+ * 17.4.46: t = b*jacobi_cd(v, m), m = b^2/a^2
+ *
+ * J(1) = 1/a*integrate((a^2-b^2*jacobi_sn(v,m)^2)/(a^2*(g+b^2)-b^2*(g+a^2)*jacobi_sn(v,m)^2),v)
+ *
+ * alpha = a^2
+ * beta  = -b^2
+ * gamma = a^2*(g+b^2)
+ * mu    = -b^2*(g+a^2)
+ * ========================================
+ * 17.4.47: t = a*jacobi_dc(v, m), m = b^2/a^2
+ *
+ * J(1) = 1/a*integrate((1-jacobi_sn(v,m)^2)/(g+a^2-(g+b^2)*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = -1
+ * gamma = g+a^2
+ * mu    = -(g+b^2)
+ * ========================================
+ * 17.4.48: t = a*jacobi_ns(v, m), m = b^2/a^2
+ *
+ * J(1) = 1/a*integrate(jacobi_sn(v,m)^2/(a^2+g*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 0
+ * beta  = 1
+ * gamma = a^2
+ * mu    = g
+ * ========================================
+ * 17.4.49: t = b*jacobi_nc(v, m), m = a^2/(a^2+b^2)
+ *
+ * J(1) = 1/sqrt(a^2+b^2)*integrate((1-jacobi_sn(v,m)^2)/(g+b^2-g*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = -1
+ * gamma = g+b^2
+ * mu    = -g
+ * ========================================
+ * 17.4.50: t = sqrt(a^2+b^2)*jacobi_ds(v, m), m = a^2/(a^2+b^2)
+ *
+ * J(1) = 1/sqrt(a^2+b^2)*integrate((1-jacobi_sn(v,m)^2)/(g+a^2+b^2-(g+a^2)*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = -1
+ * gamma = g+a^2+b^2
+ * mu    = -(g+a^2)
+ * ========================================
+ * 17.4.51: t = a*b/sqrt(a^2+b^2)*jacobi_sd(v, m), m =b^2/(a^2+b^2)
+ *
+ * J(1) = 1/sqrt(a^2+b^2)
+ *   *integrate((a^2+b^2-b^2*jacobi_sn(v,m)^2)/(g*(a^2+b^2)+b^2*(a^2-g)*jacobi_sn(v,m)^2), v)
+ *  
+ * alpha = a^2+b^2
+ * beta  = -b^2
+ * gamma = g*(a^2+b^2)
+ * mu    = b^2*(a^2-g)
+ * ========================================
+ * 17.4.52: t = b*jacobi_cn(v, m), m = b^2/(a^2+b^2)
+ *
+ * J(1) = 1/sqrt(a^2+b^2)*integrate(1/(g+b^2-b^2*jacobi_sn(v,m)^2), v)
+ *
+ * alpha = 1
+ * beta  = 0
+ * gamma = b^2+g
+ * mu    = -b^2
+ * ========================================
+ * If mu = 0, -gamma, m*gamma, or gamma = 0, the integral reduces to an integral
+ * for the first or second kind.  Here are the four cases:
+ *
+ * mu = 0:
+ *
+ *   integrate((alpha+beta*sn(u)^2)/gamma, u)
+ *     = alpha/gamma*u + beta/gamma*integrate(sn(u)^2)
+ *
+ * mu = -gamma:
+ *
+ *   integrate((alpha+beta*sn(u)^2)/(gamma-gamma*sn(u)^2), u)
+ *     = 1/gamma*integrate((alpha+beta*sn(u)^2)/cn(u)^2, u)
+ *     = 1/gamma*integrate(alpha * nc(u)^2 + beta * sc(u)^2, u)
+ *     = alpha/gamma*integrate(nc(u)^2,u) + beta/gamma*integrate(sc(u)^2,u)
+ *
+ * Or
+ *     = 1/gamma*integrate(-beta+(alpha+beta)*nc(u)^2,u)
+ *     = -beta/gamma*u + (alpha+beta)/gamma*integrate(nc(u)^2, u)
+ *
+ * mu = -m*gamma;
+ *
+ *   integrate((alpha+beta*sn(u)^2)/(gamma-m*gamma*sn(u)^2), u)
+ *     = 1/gamma*integrate((alpha+beta*sn(u)^2)/dn(u)^2, u)
+ *     = 1/gamma*integrate(alpha*nd(u)^2 + beta*sd(u)^2, u)
+ *     = alpha/gamma*integrate(nd(u)^2,u) + beta/gamma*integrate(sd(u)^2,u)
+ *
+ * Or
+ *     = 1/gamma*integrate(-beta/m + (alpha+beta/m)*nd(u)^2,u)
+ *     = -beta/gamma/m*u + (alpha+beta/m)/gamma*integrate(nd(u)^2,u)
+ *
+ * gamma = 0:
+ *
+ *   integrate((alpha+beta*sn(u)^2)/(mu*sn(u)^2), u)
+ *     = integrate(alpha/mu*ns(u)^2 + beta/mu, u)
+ *     = beta/mu*u + integrate(alpha/mu*ns(u)^2)
+ *
+ * As we can see, each integral is the integral of the square of some elliptic
+ * function, which we already know can be expressed in terms of elliptic_eu.
+ *
+ * For the general case,
+ *
+ * integrate((alpha + beta*sn(u)^2)/(gamma + mu*sn(u)^2), u)
+ *   = alpha/gamma*u
+ *       + 1/gamma^2*(beta*gamma - alpha*mu)*integrate(sn(u)^2/(1+nu*sn(u)^2), u)
+ *
+ * where nu = mu/gamma.  Let sn(a)^2 = -nu/m.  The canonical form is
+ *
+ * elliptic_pi_u(u, a, m) = integrate(m*sn(a)*cn(a)*dn(a)*sn(v)^2/(a-m*sn(a)^2*sn(v)^2), v, 0, u)
+ *
+ * Thus our integral is
+ *
+ * integrate(sn(u)^2/(1+nu*sn(u)^2, u) = elliptic_pi_u(u, a, m)/(m*sn(a)*cn(a)*dn(a))
+ *
+ */
+
+ell_ident3(g, s1, s2, x, subs, orig) :=
+  /*
+   * Use ell_ident2_aux to figure out the desired transformation.
+   * (This should be done differently!)
+   */
+  block([xfrm : ell_ident2_aux(s1, s2, x, 'elljunk),
+         a2 : abs(ratcoef(s1, x, 0)),
+         b2 : abs(ratcoef(s2, x, 0)),
+         alpha, beta, gamma, mu, mult, mult2, param, arg],
+    /*print("xfrm = ", xfrm),*/
+    xfrm : xfrm[2][2],
+    /*print("xfrm = ", xfrm),*/
+    /* Compute alpha, beta, gamma, and mu according to the transformation */
+    if xfrm = 'jacobi_sc then
+      (mult : 1/sqrt(a2),
+       alpha : 1,
+       beta : -1,
+       gamma : g,
+       mu : b2 - g,
+       param : (a2-b2)/a2,
+       arg : inverse_jacobi_sc(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_cs then
+      (mult : 1/sqrt(a2),
+       alpha : 0,
+       beta : 1,
+       gamma : a2,
+       mu : g - a2,
+       param : (a2-b2)/a2,
+       arg : inverse_jacobi_cs(x/sqrt(a2), param))
+    elseif xfrm = 'jacobi_nd then
+      (mult : 1/sqrt(a2),
+       alpha : a2,
+       beta : b2-a2,
+       gamma : a2*g+a2^2,
+       mu : b2-a2,
+       param : (a2-b2)/a2,
+       arg : inverse_jacobi_nd(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_dn then
+      (mult : 1/sqrt(a2),
+       alpha : 1,
+       beta : 0,
+       gamma : a2+g,
+       mu : b2-a2,
+       param : (a2-b2)/a2,
+       arg : inverse_jacobi_dn(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_sn then
+      (mult : 1/sqrt(a2),
+       alpha : 1,
+       beta : 0,
+       gamma : g,
+       mu : b2,
+       param : b2/a2,
+       arg : inverse_jacobi_sn(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_cd then
+      (mult : 1/sqrt(a2),
+       alpha : a2,
+       beta : -b2,
+       gamma : a2*(g+b2),
+       mu : -b2*(g+a2),
+       param : b2/a2,
+       arg : inverse_jacobi_cd(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_dc then
+      (mult : 1/sqrt(a2),
+       alpha : 1,
+       beta : -1,
+       gamma : g+a2,
+       mu : -(g+b2),
+       param : b2/a2,
+       arg : inverse_jacobi_dc(x/sqrt(a2), param))
+    elseif xfrm = 'jacobi_ns then
+      (mult : 1/sqrt(a2),
+       alpha : 0,
+       beta : 1,
+       gamma : a2,
+       mu : g,
+       param : b2/a2,
+       arg : inverse_jacobi_ns(x/sqrt(a2), param))
+    elseif xfrm = 'jacobi_nc then
+      (mult : 1/sqrt(a2+b2),
+       alpha : 1,
+       beta : -1,
+       gamma : ratsimp(g+b2),algebraic,
+       mu : -g,
+       param : a2/(a2+b2),
+       arg : inverse_jacobi_nc(x/sqrt(b2), param))
+    elseif xfrm = 'jacobi_ds then
+      (mult : 1/sqrt(a2+b2),
+       alpha : 1,
+       beta : -1,
+       gamma : g+a2+b2,
+       mu : -(g+a2),
+       param : a2/(a2+b2),
+       arg : inverse_jacobi_ds(x/sqrt(a2+b2), param))
+    elseif xfrm = 'jacobi_sd then
+      (mult : 1/sqrt(a2+b2),
+       alpha : a2+b2,
+       beta : -b2,
+       gamma : g*(a2+b2),
+       mu : -b2*(a2-g),
+       param : b2/(a2+b2),
+       arg : inverse_jacobi_sd(x*sqrt(a2+b2)/sqrt(a2*b2), param))
+    elseif xfrm = 'jacobi_cn then
+      (mult : 1/sqrt(a2+b2),
+       alpha : 1,
+       beta : 0,
+       gamma : g+b2,
+       mu : -b2,
+       param : b2/(a2+b2),
+       arg : inverse_jacobi_cn(x/sqrt(b2), param))
+    else
+       error("What?"),
+
+
+    print("alpha = ", alpha),
+    print("beta  = ", beta),
+    print("gamma = ", gamma),
+    print("mu    = ", mu),
+    print("mult  = ", mult),
+    print("m     = ", param),
+
+    if ellint3_reducible_p(gamma, mu, param) = true then
+      mult*ellint3_reducible(alpha, beta, gamma, mu, arg, param, x)
+    else
+      /* Just return the integral instead of an elliptic pi function */
+      changevar('integrate(1/(x^2+g)/sqrt(s1*s2), x), x - rhs(subs), orig, x));
+
+ellint3_reducible_p(gamma, mu, m) :=
+  is(equal(mu, 0))
+  or is(equal(gamma, 0))
+  or is(equal(0, ratsimp(mu + gamma)))
+  or is(equal(0, ratsimp(mu + m*gamma)));
+
+
+ellint3_reducible(alpha, beta, gamma, mu, arg, m, x) :=
+  if is(equal(mu, 0)) then
+    ratsimp(alpha/gamma)*arg
+      + ratsimp(beta/gamma)*ell_ident2_eu('jacobi_sn, arg, m)
+  elseif is(equal(gamma,0)) then
+    ratsimp(beta/mu)*arg
+      + ratsimp(alpha/mu)*ell_ident2_eu('jacobi_ns, arg, m)
+  elseif is(equal(0, ratsimp(mu + gamma))) then
+     -ratsimp(beta/gamma)*arg
+       + ratsimp((alpha + beta)/gamma)*ell_ident2_eu('jacobi_nc, arg, m)
+  elseif is(equal(0, ratsimp(mu + m*gamma))) then
+     -ratsimp(beta/gamma/m)*arg
+       + ratsimp((alpha + beta/m)/gamma)*ell_ident2_eu('jacobi_nd, arg, m)
+  else
+    error("Can't reduce reducible integral of the third kind!");
+      
+/*
+ * We're given an integral of the form integrate(f(u)^2,u), where f is
+ * an elliptic function.  This integral can always be expressed in terms of
+ * the elliptic integral E(u,m). Thus,this returns the desired expression.
+ *
+ * Parameters:
+ *   f  a symbol representing the elliptic function.
+ *   u  the arg of the elliptic function
+ *   m  the parameter of the elliptic function
+ *
+ * Return:
+ */ 
+ell_ident2_eu(f, u, m) :=
+  block([res,
+    /* These are from Lawden.  The following give
+     * integrate(jacobi_dn(u,m)^2, u) = elliptic_eu(u,m)
+     * in terms of other integrals */
+         eu_mapping :
+          [[jacobi_sn,
+            /* 3.4.14: = u - m*integrate(sn^2) */
+            (u - elliptic_eu(u,m))/m],
+           [jacobi_cn,
+            /* 3.4.15: = (1-m)*u+m*integrate(cn^2) */
+            ((1-m)*u - elliptic_eu(u,m))/(-m)],
+           [jacobi_ns,
+            /* 3.4.16: = u -dn(u)*cs(u) - integrate(ns^2) */
+            u - jacobi_dn(u,m)*jacobi_cs(u,m)-elliptic_eu(u,m)],
+           [jacobi_nc,
+            /* 3.4.17: = (1-m)*u + dn(u)*sc(u) - (1-m)*integrate(nc^2) */
+            ((1-m)*u + jacobi_dn(u,m)*jacobi_sc(u,m) - elliptic_eu(u,m))/(1-m)],
+           [jacobi_nd,
+            /* 3.4.18: = m*sn(u)*cd(u) + (1-m)*integrate(nd^2) */
+            (m*jacobi_cd(u,m)*jacobi_sn(u,m) - elliptic_eu(u,m))/(m - 1)],
+           [jacobi_sc,
+            /* 3.4.19: = dn(u)*sc(u)-(1-m)*integrate(sc^2) */
+            (jacobi_dn(u,m)*jacobi_sc(u,m) - elliptic_eu(u,m))/(1-m)],
+           [jacobi_sd,
+            /* 3.4.20: = (1-m)*u + m*sn(u)*cd(u) + m*(1-m)*integrate(sd^2) */
+            ((1-m)*u + m*jacobi_cd(u,m)*jacobi_sn(u,m) - elliptic_eu(u,m))/m/(m-1)],
+           [jacobi_cd,
+            /* 3.4.21: = u + m*sn(u)*cd(u)-m*integrate(cd^2) */
+            (u + m*jacobi_cd(u,m)*jacobi_sn(u,m) - elliptic_eu(u,m))/m],
+           [jacobi_cs,
+            /* 3.4.22: = -dn(u)*cs(u) - integrate(cs^2) */
+            -(jacobi_cs(u,m)*jacobi_dn(u,m)+elliptic_eu(u,m))],
+           [jacobi_ds,
+            /* 3.4.23: = (1-m)*u - dn(u)*cs(u) - integrate(ds^2) */
+            (1-m)*u-jacobi_cs(u,m)*jacobi_dn(u,m)-elliptic_eu(u,m)],
+           [jacobi_dc,
+            /* 3.4.24: = u + dn(u)*sc(u) - integrate(dc^2) */
+            u + jacobi_dn(u,m)*jacobi_sc(u,m) - elliptic_eu(u,m)],
+           [jacobi_dn,
+            elliptic_eu(u,m)]]],
+    res : assoc(f, eu_mapping),
+    res);
+  
+/*
+ * Identify the possible canonical elliptic integrals of the second kind.
+ *
+ * The integral is integrate(t^2/sqrt(s1*s2),t) where s1 and s2 have
+ * the form A+B*t^2 with |B| = 1.
+ *
+ * The result is always of the form f*integrate(ef^2(u),u) where f is some 
+ * multiplier and ef is an elliptic function.  There are two possible elliptic
+ * functions and we return both, to let the caller choose which one to use.
+ *
+ * This function returns several items:
+ *
+ * [1]  The parameter of the elliptic function (m = k^2)
+ * [2]  A list representing one solution:
+ *      [1] The multiplier
+ *      [2] A symbol indicating which inverse jacobian elliptic function
+ *          is used
+ *      [3] The substitution needed to convert the original integral to the 
+ *          new form.
+ * [3]  The second solution consisting of
+ *      [1] The multiplier
+ *      [2] A symbol indicating which inverse jacobian elliptic function
+ *          is used
+ *      [3] The substitution needed to convert the original integral to the 
+ *          new form.
+ */
+ell_ident2_aux(s1, s2, var, newvar) :=
+block([a2 : ratcoef(s1, var, 0),
+       b2 : ratcoef(s2, var, 0)],
+  block([sign_a0 : asksign(ratcoef(s1, var, 2)),
+         sign_b0 : asksign(ratcoef(s2, var, 2)),
+         sign_a2 : asksign(a2),
+         sign_b2 : asksign(b2),
+         abs_a2 : abs(a2),
+         abs_b2 : abs(b2)],
+    /*     
+    print(sign_a0),
+    print(sign_a2),
+    print(sign_b0),
+    print(sign_b2),
+    */
+    if sign_a0 = 'neg and sign_a2 = 'pos and sign_b0 = 'neg and sign_b2 = 'pos then 
+      /* (a-t^2)*(b-t^2) */
+      if asksign(abs_b2 - abs_a2) = 'pos then
+        ell_ident2_aux(s2, s1, var, newvar)
+      else
+        /* Lawden 3.4.4, 3.4.5 */
+        [abs_b2/abs_a2,
+         [b2/sqrt(abs_a2), 'jacobi_sn,
+          inverse_jacobi_sn(var/sqrt(abs_b2), abs_b2/abs_a2)],
+         [-b2/sqrt(abs_a2), 'jacobi_cd,
+          inverse_jacobi_cd(var/sqrt(abs_b2), abs_b2/abs_a2)]]
+    else if sign_a0 = 'pos and sign_a2 = 'pos and sign_b0 = 'neg and sign_b2 = 'pos then
+      /* (a+t^2)*(b-t^2) */
+      /* Lawden 3.4.2, 3.4.3 */
+      [abs_b2/(abs_a2+abs_b2),
+       [abs_a2*abs_b2*(abs_a2+abs_b2)^(-3/2), 'jacobi_sd,
+        inverse_jacobi_sd(var*sqrt(abs_a2+abs_b2)/sqrt(abs_a2)/sqrt(abs_b2), abs_b2/(abs_a2+abs_b2))],
+       [-abs_b2/sqrt(abs_a2+abs_b2), 'jacobi_cn,
+        inverse_jacobi_cn(var/sqrt(abs_b2), abs_b2/(abs_a2+abs_b2))]]
+    else if sign_a0 = 'neg and sign_a2 = 'pos and sign_b0 = 'pos and sign_b2 = 'neg then
+      /* (a-t^2)*(t^2-b) */
+      /* Lawden 3.4.8, 3.4.9 */
+      [1-abs_b2/abs_a2,
+       [abs_b2/sqrt(abs_a2), 'jacobi_nd,
+        inverse_jacobi_nd(var/sqrt(abs_b2), 1-abs_b2/abs_a2)],
+       [-sqrt(abs_a2), 'jacobi_dn,
+        inverse_jacobi_dn(var/sqrt(abs_a2), 1-abs_b2/abs_a2)]]
+    else if sign_a0 = 'pos and sign_a2 = 'neg and sign_b0 = 'pos and sign_b2 = 'neg then
+      /* (t^2-a)*(t^2-b) */
+      if asksign(abs_b2 - abs_a2) = 'pos then
+        ell_ident2_aux(s2, s1, var, newvar)
+      else
+        /* Lawden 3.4.6, 3.4.7 */
+        [abs_b2/abs_a2,
+         [sqrt(abs_a2), 'jacobi_dc, 
+          inverse_jacobi_dc(var/sqrt(abs_a2), abs_b2/abs_a2)],
+         [-sqrt(abs_a2), 'jacobi_ns,
+          inverse_jacobi_ns(var/sqrt(abs_a2), abs_b2/abs_a2)]]
+    else if sign_a0 = 'pos and sign_a2 = 'neg and sign_b0 = 'pos and sign_b2 = 'pos then
+      /* (t^2-a)*(t^2+b) */
+      /* Lawden 3.4.10, 3.4.11 */
+      [abs_b2/(abs_a2+abs_b2),
+       [abs_a2/sqrt(abs_a2+abs_b2), 'jacobi_nc,
+        inverse_jacobi_nc(var/sqrt(abs_a2),abs_b2/(abs_a2+abs_b2))],
+       [-sqrt(abs_a2+abs_b2), 'jacobi_ds,
+        inverse_jacobi_ds(var/sqrt(abs_a2+abs_b2), abs_b2/(abs_a2+abs_b2))]]
+    else if sign_a0 = 'pos and sign_a2 = 'pos and sign_b0 = 'pos and sign_b2 = 'pos then
+      /* (t^2+a)*(t^2+b) */
+      /* Lawden: 3.4.12, 3.4.13 */
+      [1-abs_b2/abs_a2,
+       [abs_b2/sqrt(abs_a2), 'jacobi_sc,
+        inverse_jacobi_sc(var/sqrt(abs_b2),1-abs_b2/abs_a2)],
+       [-sqrt(abs_a2), 'jacobi_cs,
+        inverse_jacobi_cs(var/sqrt(abs_a2), 1-abs_b2/abs_a2)]]
+    else
+      /* Can this happen? */
+      ell_ident2_aux(s2, s1, var, newvar)
+  )
+);
+
+
+ell_ident2(s1, s2, var, newvar) :=
+block([id : ell_ident2_aux(s1, s2, var, newvar),
+       m, f1, f2],
+  m : id[1],
+  f1 : id[2],
+  f2 : id[3],
+  [f1[1]*ell_ident2_eu(f1[2],f1[3],m),
+   f2[1]*ell_ident2_eu(f2[2],f2[3],m)]
+);
+
+
+/*
+ * Some useful rules for converting Jacobi elliptic functions into other forms
+ */
+
+matchdeclare([jacobi_uu,jacobi_mm], true)$
+/* Convert n<foo> to 1/<foo>n */
+defrule(jns, 'jacobi_ns(jacobi_uu, jacobi_mm), 1/jacobi_sn(jacobi_uu, jacobi_mm));
+defrule(jnc, 'jacobi_nc(jacobi_uu, jacobi_mm), 1/jacobi_cn(jacobi_uu, jacobi_mm));
+defrule(jnd, 'jacobi_nd(jacobi_uu, jacobi_mm), 1/jacobi_dn(jacobi_uu, jacobi_mm));
+/* Convert into sn, cn, or dn */
+defrule(jsc, 'jacobi_sc(jacobi_uu, jacobi_mm),
+  jacobi_sn(jacobi_uu, jacobi_mm)/jacobi_cn(jacobi_uu, jacobi_mm));
+defrule(jsd, 'jacobi_sd(jacobi_uu, jacobi_mm),
+  jacobi_sn(jacobi_uu, jacobi_mm)/jacobi_dn(jacobi_uu, jacobi_mm));
+defrule(jcs, 'jacobi_cs(jacobi_uu, jacobi_mm),
+  jacobi_cn(jacobi_uu, jacobi_mm)/jacobi_sn(jacobi_uu, jacobi_mm));
+defrule(jcd, 'jacobi_cd(jacobi_uu, jacobi_mm),
+  jacobi_cn(jacobi_uu, jacobi_mm)/jacobi_dn(jacobi_uu, jacobi_mm));
+defrule(jds, 'jacobi_ds(jacobi_uu, jacobi_mm),
+  jacobi_dn(jacobi_uu, jacobi_mm)/jacobi_sn(jacobi_uu, jacobi_mm));
+defrule(jdc, 'jacobi_dc(jacobi_uu, jacobi_mm),
+  jacobi_dn(jacobi_uu, jacobi_mm)/jacobi_cn(jacobi_uu, jacobi_mm));
+/* Convert cn, dn to sn */
+defrule(jcn_sn, 'jacobi_cn(jacobi_uu, jacobi_mm),
+  sqrt(1-jacobi_sn(jacobi_uu, jacobi_mm)^2));
+defrule(jdn_sn, 'jacobi_dn(jacobi_uu, jacobi_mm),
+  sqrt((1-jacobi_mm*jacobi_sn(jacobi_uu, jacobi_mm)^2)));
+/* Convert sn to dn */
+defrule(jsn_dn, 'jacobi_sn(jacobi_uu, jacobi_mm),
+  sqrt((1-jacobi_dn(jacobi_uu, jacobi_mm)^2)/jacobi_mm));
+defrule(jsn_cn, 'jacobi_sn(jacobi_uu, jacobi_mm),
+  sqrt(1-jacobi_cn(jacobi_uu, jacobi_mm)^2));
+defrule(jdn_cn, 'jacobi_dn(jacobi_uu, jacobi_mm),
+  sqrt((1-jacobi_mm-jacobi_mm*jacobi_cn(jacobi_uu,jacobi_mm)^2)));
+defrule(jcn_dn, 'jacobi_cn(jacobi_uu, jacobi_mm),
+  sqrt((jacobi_dn(jacobi_uu, jacobi_mm)^2-1+jacobi_mm)/jacobi_mm));
+
+
+print("load pathname", load_pathname);
+                                      

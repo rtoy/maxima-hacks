@@ -1,0 +1,10 @@
+a(k,v) := pochhammer(1/2+v, k) * pochhammer(1/2-v,k)/k!;
+
+bi(v, z, n) :=
+  exp(z)/sqrt(2*%pi*z)
+    *(sum(a(k,v)*gamma_incomplete_regularized(k+v+1/2, z)/(2*z)^k, k, 0, n) 
+      + exp(-2*z+%pi*%i*(v+1/2)) * sum((-1)^k*a(k,v)*gamma_incomplete_regularized(k+v+1/2,-z)/(2*z)^k, k, 0, n));
+
+bi1(v, z, n) := 
+  exp(z)/sqrt(2*%pi*z)*sum(a(k,v)/(2*z)^k*(1-gamma_incomplete_regularized(k+v+1/2,2*z)),k, 0, n);
+

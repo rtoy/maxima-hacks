@@ -1,0 +1,56 @@
+/* exp-arc */
+
+/*
+ * B[k](p) = integrate(x^(2*k)*exp(-2*p*x^2),x,0,1/sqrt(2))
+ *
+ * B[0](p) = integrate(exp(-2*p*x^2),x,0,1/sqrt(2));
+ *
+ * Use the recursion in , formula 2.6.
+ */
+
+/*B[k](p) := -exp(-p)/(p*2^(k+1)*sqrt(2)) + (k-1/2)*B[k-1](p)/2/p;*/
+B[k](p) := bfloat(rectform(-exp(-p)/(p*2^(k+1)*sqrt(2)) + (k-1/2)*B[k-1](p)/2/p));
+
+/*B[0](p) := ''integrate(exp(-2*p*x^2),x,0,1/sqrt(2));*/
+B[0](p) := bfloat(rectform(sqrt(%pi)/2^(3/2)*erf(sqrt(p))/sqrt(p)));
+
+/* 
+ * r[2*m+1](v) = v*product(v^2+(2*j-1)^2, j, 1, m)
+ * r[1](v) = v
+ *
+ * For simplicity, let R[m](v) = r[2*m+1](v).
+ * Then R[m](v) = v*product(v^2+(2*j-1)^2, j, 1, m)
+ *
+ * and R[m](v) = R[m-1](v)*(v^2+(2*m-1)^2)
+ * with R[0](v) = v;
+ */
+
+R[m](v) := R[m-1](v)*(v^2+(2*m-1)^2);
+R[0](v) := v;
+
+/*
+ * term = r[2*k+1](-2*%i*q)/(2*k)!*B[k](p)
+ *      = R[k](-2*%i*q)/(2*k)!*B[k](p)
+ */
+
+term(p, q, k) := R[k](-2*%i*q)/(2*k)!*B[k](p);
+
+/*
+ * Eq 2.5:
+ *
+ * int(p, q, N) = 2*%i*exp(p)/q * sum(term(p,q,k), k, 0, N);
+ */
+
+int(p, q, N) := 2*%i*exp(p)/q * sum(term(p,q,k), k, 0, N);
+
+a[0](k,v) := (k+sqrt(k^2+1))^(-v);
+a[1](k,v) := -v*a[0](k,v)/sqrt(k^2+1);
+a[n](k,v) := 1/(k^2+1)/(n-1)/n*((v^2-(n-2)^2)*a[n-2](k,v)-k*(n-1)*(2*n-3)*a[n-1](k,v));
+
+alpha_i(n,z) := integrate(exp(-z*s)*s^n,s,0,1/2);
+beta_i(n,z)  := integrate(exp(-z*s)*s^n,s,-1/2,1/2);
+
+A(n,v) := if is(equal(v,floor(v))) and is(v < 0) and is(n>=-v) then (-1)^(-v+1)*A(n+v,v) else (-1)^n*v*2^(-v)*pochhammer(v+n+1,n-1)/2^(2*n)/n!;
+
+big_i(n,theta,z,v) := exp(-theta*z)/theta^(2*n+v-1)*integrate(exp(-theta*z*s)*(1+s)^(-2*n-v),s,0,inf);
+
