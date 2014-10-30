@@ -4,7 +4,12 @@
   :source-pathname (maxima::maxima-load-pathname-directory)
   :binary-pathname (maxima::maxima-objdir "share" "odepack")
   :components
-  ((:module src
+  ((:module package
+    :source-pathname ""
+    :components
+    ((:file "package")))
+   (:module src
+    :depends-on ("package")
     :components
 	    ((:file "adjlr"
 	      :depends-on ("nroc" "nsfc" "nnfc" "nnsc"))
@@ -141,14 +146,56 @@
 	     (:file "xsetf")
 	     (:file "xsetun")))))
 
+(mk:defsystem odepack-package
+  :source-pathname (maxima::maxima-load-pathname-directory)
+  :binary-pathname (maxima::maxima-objdir "share" "odepack")
+  :components
+  ((:file "package")))
+
+(mk:defsystem odepack-dlsode
+  :source-pathname (maxima::maxima-load-pathname-directory)
+  :binary-pathname (maxima::maxima-objdir "share" "odepack")
+  :depends-on ("odepack-package")
+  :components
+  ((:module "src"
+    :components
+    ((:file "dlsode"
+      :depends-on ("dstode"))
+     (:file "dintdy"
+      :depends-on ("xerrwd"))
+     (:file "dstode")
+     (:file "dcfode")
+     (:file "dprepj")
+     (:file "dsolsy")
+     (:file "dewset")
+     (:file "dvnorm")
+     (:file "dsrcom")
+     (:file "dgefa"
+      :depends-on ("idamax" "dscal" "daxpy"))
+     (:file "dgesl"
+      :depends-on ("daxpy" "ddot"))
+     (:file "dgbsl"
+      :depends-on ("daxpy"))
+     (:file "dscal")
+     (:file "ddot")
+     (:file "idamax")
+     (:file "dumach"
+      :depends-on ("dumsum"))
+     (:file "xerrwd"
+      :depends-on ("ixsav"))
+     (:file "xsetun")
+     (:file "xsetf")
+     (:file "ixsav")
+     (:file "iumach")
+     (:file "daxpy")
+     (:file "dumsum")))))
+
 (mk:defsystem maxima-odepack
   :source-pathname (maxima::maxima-load-pathname-directory)
   :binary-pathname (maxima::maxima-objdir "share" "odepack")
   :depends-on ("odepack")
   :components
-  ((:file "package")
-   (:file "dlsode-interface"
-    :depends-on ("package"))))
+  ((:file "dlsode-interface")))
 
 
 ;;; Demo programs
