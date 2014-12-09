@@ -1,3 +1,4 @@
+/*
 minimax(x, f, low, high, var) :=
   block([deg : length(x) - 1,
          p, poly],
@@ -8,6 +9,7 @@ minimax(x, f, low, high, var) :=
            point_size=3,
            points(map(lambda([u],[u[1],u[2]-f(u[1])]), p))),
     poly);
+*/
 
 find_coef(control_points, fval, var, type) :=
   block([deg : length(control_points) - 2,
@@ -94,13 +96,23 @@ find_minmax(f, var, x0, x1, x2, eps) :=
       block([xcoord : [[x0, subst([var=x0], f)],
                        [x1, subst([var=x1], f)],
                        [x2, subst([var=x2], f)]],
+             bftorat : true,
              quad, xpoint],
-        quad : bfloat(ratinterpol(xcoord, 2)),
+/*
+        print("xcoord = ", xcoord),
+*/
+        quad : expand(lagrange(xcoord)),
+/*
+	print("quad = ", quad),
+*/
         if is(equal(coeff(quad,'x,2), 0))
         then
           x1
         else
           (xpoint : bfloat(-coeff(quad, 'x, 1)/(2*coeff(quad,'x,2))),
+/*
+	   print("xpoint = ", xpoint),
+*/
            if is(xpoint < x1)
            then
              find_minmax(f, var, x0, xpoint, x1, eps)
@@ -155,7 +167,7 @@ find_extrema3(poly, f, limit, nsamples, type, var) :=
   block([samples : bfloat(makelist(limit[1] + (limit[2]-limit[1])/nsamples * k,
                                    k, 0, nsamples-1)),
         deg : hipow(poly, var),
-        fval, prevsign, roots],
+        fval, prevsign, roots, maxerr, evals],
     /* Create a grid and find the extremum */
     if type = 'abs
     then
@@ -179,26 +191,33 @@ find_extrema3(poly, f, limit, nsamples, type, var) :=
 
     roots : reverse(roots),
     control : [limit[1]],
+/*
     print("roots = ", roots),
+*/
     /* Find extremum in the interval */
     for k : 1 thru length(roots)-1
       do
         block([point],
           point : find_minmax(if type = 'abs then poly-f else relerr(poly, f), var,
                               roots[k], (roots[k]+roots[k+1])/2, roots[k+1], 1d-10),
+/*
 	  print("k, point = ", k, point),
+*/
           control : cons(point, control)
         ),
     control : cons(limit[2],control),
     control : reverse(control),
-    print("extremum = ", control),
-    [control,
-     apply(max, map(lambda([u], if type = 'abs
+    evals : map(lambda([u], if type = 'abs
                                 then
                                   subst([var=u], abs(poly - f))
                                 else
                                   subst([var=u], abs(relerr(poly, f)))),
-                    control))]
+                    control),
+    maxerr : apply(max, evals),
+    print("maxerr = ", abs(maxerr)),
+    print("extremum values = ", evals),
+    print("extremum = ", control),
+    [control, maxerr]
     );
 
 exchange(x, val) :=
@@ -225,6 +244,17 @@ exchange(x, val) :=
     sort(x, "<")
     );
 */
+
+/*
+ * Fine the minimax polynomial that approximates the function f over an interval [a, b].
+ * 
+ * x = list of initial estimates of the minima and maxima of the error curve
+ * f = function to be approximated
+ * limits = The interval of approximation, as a list of the lower and upper bounds
+ * var = variable for the unknown in f.
+ * type = 'abs or 'rel for aboslute or relative error criterion
+ * niter =  number of iterations to run.
+ */
 minimax(x, f, limits, var, type, niter) :=
   block([ratprint : false,
          mapprint : false,
@@ -255,3 +285,18 @@ minimax(x, f, limits, var, type, niter) :=
         ),
     [err, p, x]
 );
+
+/*
+ * Simple routine that takes a list of values
+ * [x1, x2, ..., xn]
+ * and adds more points to create a new list:
+ * [x1, (x1+x2)/2, x2, (x2+x3)/2, x3, ..., (x[n-1]+xn)/2, xn]
+ */
+split_interval(x) :=
+  block([idx: 0, len: length(x), r],
+    r : makelist(0, k, 1, 2 * len - 1),
+    for k : 1 thru len do
+       r[2*k - 1] : x[k],
+    for k : 1 thru len - 1 do
+       r[2 * k]: (x[k] + x[k + 1]) / 2,
+    r);
