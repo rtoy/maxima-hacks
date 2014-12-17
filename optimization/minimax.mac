@@ -165,7 +165,7 @@ find_extrema2(poly, f, limit, nsamples, type, var) :=
 
 find_extrema3(poly, f, limit, nsamples, type, var) :=
   block([samples : bfloat(makelist(limit[1] + (limit[2]-limit[1])/nsamples * k,
-                                   k, 0, nsamples-1)),
+                                   k, 0, nsamples)),
         deg : hipow(poly, var),
         fval, prevsign, roots, maxerr, evals],
     /* Create a grid and find the extremum */
