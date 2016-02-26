@@ -1,0 +1,183 @@
+/*
+ * Compute sin(arg/2) and cos(arg/2) given the value of arg, and
+ * sin(arg) and cos(arg).  For this to be useful, Maxima needs to be
+ * able to compute the value of sin(arg) and cos(arg).
+ *
+ * The result is the list [sin(arg/2), cos(arg/2)].
+ */
+
+sincos_half1(arg, sval, cval) :=
+  block([halfangles:true,
+         s, c],
+    s : sin(xvar/2),
+    c : cos(xvar/2),
+    /* Should we ratsimp/algebraic these values? */
+    subst(xvar = arg, [subst([cos(xvar)=cval], s),
+			       subst([cos(xvar)=cval], c)]));
+
+/*
+ * Compute sin(arg/2^n) and cos(arg/2^n).  For this to be useful,
+ * Maxima must be able to compute sval = sin(arg) and cval = cos(arg).
+ *
+ * The result is the list [sin(arg/2^n), cos(arg/2^n)].
+ */
+sincos_half(arg, n, sval, cval) :=
+  block([],
+    for i : 1 thru n do
+        ([sval, cval] : sincos_half1(arg, sval, cval),
+         arg : arg/2),
+    [sval, cval]);
+
+/*
+ * Compute tan(arg/2) using the half-angle formula when tan(arg) is
+ * given and 0 < arg < %pi/2
+ *
+ * From http://mathworld.wolfram.com/Half-AngleFormulas.html
+ */
+tan_half1(tval) :=
+  (sqrt(1+tval^2)-1)/tval;
+
+tan_half(n, tval) :=
+  block([],
+    for i : 1 thru n do
+      tval : tan_half1(tval),
+    tval);
+
+/* Match x such that x is of the form n/2^m for integers n and m, m > 0 */
+matchdeclare(pow,lambda([x], 
+                        block([top : num(x), bot : denom(x)],
+                          integerp(top) and integerp(bot)
+                          and is(bot > 0)
+                          and is(equal(bot, 2^(?integer\-length(bot)-1))))))$
+
+tellsimpafter(sin(pow*%pi),usin2(pow));
+tellsimpafter(cos(pow*%pi),ucos2(pow))$
+tellsimpafter(tan(pow*%pi),utan2(pow))$
+tellsimpafter(cot(pow*%pi),1/utan2(pow))$
+tellsimpafter(sec(pow*%pi),1/ucos2(pow))$
+tellsimpafter(csc(pow*%pi),1/usin2(pow))$
+
+/* Match x such that x is of the form n/3/2^m for integers n and m, m > 0 */
+matchdeclare(pow3, lambda([x], 
+                        block([top : num(x), bot : denom(x)],
+                          integerp(top) and integerp(bot)
+                          and is(bot > 0) and remainder(bot,3) = 0
+                          and is(equal(bot/3, 2^(?integer\-length(bot/3)-1))))))$
+tellsimpafter(sin(pow3*%pi),usin3(pow3));
+tellsimpafter(cos(pow3*%pi),ucos3(pow3))$
+tellsimpafter(tan(pow3*%pi),utan3(pow3))$
+tellsimpafter(cot(pow3*%pi),1/utan3(pow3))$
+tellsimpafter(sec(pow3*%pi),1/ucos3(pow3))$
+tellsimpafter(csc(pow3*%pi),1/usin3(pow3))$
+
+/* Match x such that x is of the form n/5/2^m for integers n and m, m > 0 */
+matchdeclare(pow5, lambda([x], 
+                        block([top : num(x), bot : denom(x)],
+                          integerp(top) and integerp(bot)
+                          and is(bot > 0) and remainder(bot,5) = 0
+                          and is(equal(bot/5, 2^(?integer\-length(bot/5)-1))))))$
+tellsimpafter(sin(pow5*%pi),usin5(pow5));
+tellsimpafter(cos(pow5*%pi),ucos5(pow5))$
+tellsimpafter(tan(pow5*%pi),usin5(pow5)/ucos5(pow5))$
+tellsimpafter(cot(pow5*%pi),ucos5(pow5)/usin5(pow5))$
+tellsimpafter(sec(pow5*%pi),1/ucos5(pow5))$
+tellsimpafter(csc(pow5*%pi),1/usin5(pow5))$
+
+usin(r, factor, ang, s, c, [skip]) :=
+  block([top : num(r),
+         bot : denom(r),
+         nskip : if skip = [] then 0  else skip[1],
+         m],
+    /* The denominator is factor*2^m, and the integer-length of 2^m is one too high */
+    m : ?integer\-length(bot/factor) - 1 - nskip,
+    [s, c] : sincos_half(ang, m, s, c),
+    /*
+     * For simplicity we simplify the numerator using the periodicity
+     * properties of the trig functions.  But we could simplify this
+     * even further by using the symmetry properties.  Perhaps it's
+     * not worth it since we don't expect anyone to do this for really
+     * large values of m.
+     */
+    top : remainder(top, 2*bot),
+    /* Should we try to ratsimp/sqrtdenest these results? */
+    subst([sin(xvar) = s, cos(xvar) = c], trigexpand(sin(top*xvar))));
+
+ucos(r, factor, ang, s, c, [skip]) :=
+  block([top : num(r),
+         bot : denom(r),
+         nskip : if skip = [] then 0  else skip[1],
+         m],
+    /* The denominator is 2^m, and the integer-length of 2^m is one too high */
+    m : ?integer\-length(bot/factor) - 1 - nskip,
+    [s, c] : sincos_half(ang, m, s, c),
+    top : remainder(top, 2*bot),
+    subst([sin(xvar) = s, cos(xvar) = c], trigexpand(cos(top*xvar))));
+
+utan(r, factor, t, [skip]) :=
+  block([top : num(r),
+         bot : denom(r),
+         nskip : if skip = [] then 0 else skip[1],
+         m],
+    m : ?integer\-length(bot/factor) - 1 - nskip,
+    t : tan_half(m, t),
+    top : remainder(top, 2*bot),
+    subst(tan(xvar) = t, trigexpand(tan(top*xvar))));
+
+
+/* Compute sin(n*%pi/4/2^m) */
+usin2(r) :=
+  usin(r, 1, %pi, sin(%pi), cos(%pi));
+
+/* Compute cos(n*%pi/4/2^m) */
+ucos2(r) :=
+  ucos(r, 1, %pi, sin(%pi), cos(%pi));
+
+utan2(r) :=
+  utan(r, 4, 1);
+
+/* Compute sin(n*%pi/3/2^m) */
+usin3(r) :=
+  block([bot : denom(r)],
+    if bot >= 12 then
+      usin(r, 3, %pi/12, (sqrt(6)-sqrt(2))/4, (sqrt(6)+sqrt(2))/4, 2)
+    else
+      usin(r, 3, %pi/3, sin(%pi/3), cos(%pi/3)));
+
+/* Compute cos(n*%pi/3/2^m) */
+ucos3(r) :=
+  ucos(r, 3, %pi/3, sin(%pi/3), cos(%pi/3));
+
+
+utan3(r) :=
+  utan(r, 3, sqrt(3));
+
+/*
+ * A quick derivation on the value of sin(%pi/5):
+ *
+ * trigexpand(sin(5*x)) -> 
+ *   sin(x)^5-10*cos(x)^2*sin(x)^3+5*cos(x)^4*sin(x)
+ * expand(subst([cos(x)^2=1-sin(x)^2, cos(x)^4=(1-sin(x)^2)^2], %)) ->
+ *   16*sin(x)^5-20*sin(x)^3+5*sin(x)
+ *
+ * Let x = %pi/5.  Then, with y = sin(%pi/5)
+ *
+ *   0 = 16*y^5-20*y^3+5*y = y*(16*y^4-20*y^2+5)
+ *
+ * Solve for y^2 and choose the smaller value:
+ *
+ *   y^2 = (5-sqrt(5))/8.
+ *
+ * Thus, y = sin(%pi/5) = sqrt((5-sqrt(5))/8) = sqrt(10-2*sqrt(5))/4
+ *
+ * Finally, cos(%pi/5) = ratsimp(sqrt(1-sin(%pi/5)^2)) = sqrt(sqrt(5)+3)/2^(3/2)
+ * sqrtdenest and ratsimp simplifies this to (1+sqrt(5))/4.
+ */
+
+/* Compute sin(n*%pi/5/2^m) */
+usin5(r) :=
+  usin(r, 5, %pi/5, sqrt(10-2*sqrt(5))/4, (1+sqrt(5))/4);
+
+/* Compute cos(n*%pi/5/2^m) */
+ucos5(r) :=
+  ucos(r, 5, %pi/5, sqrt(10-2*sqrt(5))/4, (1+sqrt(5))/4);
+
