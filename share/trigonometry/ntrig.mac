@@ -26,7 +26,8 @@ sincos_half(arg, n, sval, cval) :=
     for i : 1 thru n do
         ([sval, cval] : sincos_half1(arg, sval, cval),
          arg : arg/2),
-    [sval, cval]);
+    block([algebraic: true],
+      ratsimp([sval, cval])));
 
 /*
  * Compute tan(arg/2) using the half-angle formula when tan(arg) is
@@ -41,7 +42,8 @@ tan_half(n, tval) :=
   block([],
     for i : 1 thru n do
       tval : tan_half1(tval),
-    tval);
+    block([algebraic: true],
+      ratsimp(tval)));
 
 /* Match x such that x is of the form n/2^m for integers n and m, m > 0 */
 matchdeclare(pow,lambda([x], 
@@ -111,7 +113,8 @@ ucos(r, factor, ang, s, c, [skip]) :=
     m : ?integer\-length(bot/factor) - 1 - nskip,
     [s, c] : sincos_half(ang, m, s, c),
     top : remainder(top, 2*bot),
-    subst([sin(xvar) = s, cos(xvar) = c], trigexpand(cos(top*xvar))));
+    block([algebraic: true],
+      ratsimp(subst([sin(xvar) = s, cos(xvar) = c], trigexpand(cos(top*xvar))))));
 
 utan(r, factor, t, [skip]) :=
   block([top : num(r),
@@ -121,7 +124,8 @@ utan(r, factor, t, [skip]) :=
     m : ?integer\-length(bot/factor) - 1 - nskip,
     t : tan_half(m, t),
     top : remainder(top, 2*bot),
-    subst(tan(xvar) = t, trigexpand(tan(top*xvar))));
+    block([algebraic: true],
+      ratsimp(subst(tan(xvar) = t, trigexpand(tan(top*xvar))))));
 
 
 /* Compute sin(n*%pi/4/2^m) */
