@@ -1,3 +1,36 @@
+/*
+ * Digital filter design from an analog filter.
+ *
+ * This is all based on Digital Signal Procesing, Oppenheim and
+ * Schafer, 1975.
+ *
+ * Chapter 5 has a good introduction designing digital filters by
+ * transforming analog filters to the digital domain.
+ */
+
+/*
+ * Basic routine for computing a lowpass Butterworth filter with the
+ * given filter design parameters.
+ *
+ *    passband  - right-hand edge of the pass band
+ *    stopband  - left-hand edge of the stop band
+ *    passdB    - max pass band ripple
+ *    stopdB    - max stop band ripple
+ *    sampleRate - sample rate, Hz, of the system
+ *
+ * The output is a list containing the following items:
+ *    wc  - the cutoff frequency
+ *    N   - order of the filter
+ *    c   - coefficient of the numerator
+ *    Ha  - denominator polynomial
+ *
+ * This means the the designed Butterworth is given by
+ *
+ *       c / Ha
+ *
+ * where Ha is a product of quadratic polynomials and possibly a
+ * linear polynomial.
+ */
 butterworth_core(passband, stopband, passdB, stopdB, sampleRate) :=
   block([f0 : float(2*%pi*passband / sampleRate),
          f1 : float(2*%pi*stopband / sampleRate),
@@ -78,6 +111,10 @@ butterworth_core(passband, stopband, passdB, stopdB, sampleRate) :=
     return([w, N, w^N, Ha])
   );
 
+/*
+ * Apply the bilinear transform to either a linear of quadratic
+ * polynomial.
+ */
 bilinear_xfrm(p, z) :=
   block([order : hipow(p, s)],
     /*
@@ -124,6 +161,12 @@ bilinear_xfrm(p, z) :=
         return((1+z)^2/a0/(1 + (2*c-8)/a0*z + (c-2*b+4)/a0*z^2))
       )
   );
+
+/*
+ * Given a list of (linear or quadratic) polynomials, apply the
+ * bilinear transformation to each one, returning a new list of the
+ * transformed polynomials.
+ */
 
 apply_bilinear(Ha,z) := map(lambda([p], bilinear_xfrm(p, z)), Ha);
 
@@ -181,6 +224,28 @@ webaudio_xfrm(p,z) :=
 apply_webaudio(pl,z) :=
   map(lambda([p], webaudio_xfrm(p, z)), pl);
 
+/*
+ * Design a digital lowpass Butterworth filter from the following
+ * parameters.
+ *
+ *    passband  - right-hand edge of the pass band
+ *    stopband  - left-hand edge of the stop band
+ *    passdB    - max pass band ripple
+ *    stopdB    - max stop band ripple
+ *    sampleRate - sample rate, Hz, of the system
+ *
+ * The output is a list of the following items
+ *
+ *    Hz        - z-transform of designed digital filter
+ *    bilinear  -
+ *    webaudio  - A list containing information about how to configure
+ *                WebAudio Biquad lowpass filters to achieve the
+ *                desired filter.  Since z-transform is a product of
+ *                quadratic and linear terms the resulting WebAudio
+ *                design should cascade the filters in series.
+ *
+ */
+
 butterworth(passband, stopband, passdB, stopdB, sampleRate) :=
   block([core: butterworth_core(passband, stopband, passdB, stopdB, sampleRate),
          bilinear, xfrm],
@@ -191,3 +256,37 @@ butterworth(passband, stopband, passdB, stopdB, sampleRate) :=
             bilinear,
             [core[3], apply_webaudio(bilinear, z)]])
   );
+
+/*
+ * Here is an example Oppenheim and Schafer, ch. 5.2.1, bilinear
+ * transformation.
+ *
+ * We want a filter with a passband at 4800 Hz and a stopband at 7200
+ * Hz with a sample rate of 48 kHz.  The max passband rippled is 1dB
+ * and the stop band must be down by at 15 dB.  Then:
+ *
+butterworth(4800, 7200, 1, 15, 48000);
+[(7.378199305934768e-4*(1/z+1)^6)/(((-1.268646804387189/z)
+                                  +0.705128243218523/z^2+1)
+                                  *((-1.010578881046134/z)
+                                   +0.358271337706398/z^2+1)
+                                  *((-0.9043660641139337/z)
+                                   +0.2155157075998964/z^2+1)),
+ [(0.1324926107321144*(z+1)^2)/(0.2155157075998964*z^2-0.9043660641139337*z
+                                                      +1),
+  (0.1480531386720332*(z+1)^2)/(0.358271337706398*z^2-1.010578881046134*z+1),
+  (0.185860940475357*(z+1)^2)/(0.705128243218523*z^2-1.268646804387189*z+1)],
+ [0.2023731891260674,
+  [[w0 = 0.731731785988238,Q = 0.5176380902050416,gain = 1.035172964889282],
+   [w0 = 0.731731785988238,Q = 0.7071067811865477,gain = 1.156748332404506],
+   [w0 = 0.7317317859882375,Q = 1.931851652578134,gain = 1.452143027040159]]]]
+
+ * This says that to meet our requirements, we need a 6-th order
+ * filter. To see if we got the desired filter, plot the magnitude
+ * response:
+
+plot2d(20*log(cabs(subst(z=1/exp(2*%pi*%i*f/48000),%o432[1])))/log(10),[f,0,24000],[y,-15,0]);
+
+ * We can see at 7200 Hz, the filter is actually down 15 db.
+ *
+ */
