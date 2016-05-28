@@ -1,0 +1,193 @@
+butterworth_core(passband, stopband, passdB, stopdB, sampleRate) :=
+  block([f0 : float(2*%pi*passband / sampleRate),
+         f1 : float(2*%pi*stopband / sampleRate),
+         d0 : float(10^(passdB/10)),
+         d1 : float(10^(stopdB/10)),
+         w, N, roots, poles, Ha],
+    /*
+     * Solve the equations for N and w:
+     *
+     *   1 + (2*tan(f0)/w)^(2*N) = d0
+     *   1 + (2*tan(f1)/w)^(2*N) = d1
+     *
+     * where f0 is the edge of the pass band, f1 is the edge of the stop band,
+     * d0 and d1 are the peak ripple in the pass band and stop band,
+     * respectively.
+     *
+     * solve doesn't know how to solve this, so we do it by hand.
+     *
+     *   (2*tan(f0)/w)^(2*N) = d0 - 1
+     *   (2*tan(f1)/w)^(2*N) = d1 - 1
+     *
+     * Take logs:
+     *
+     *   2*N*log(2*tan(f0)/w) = log(d0-1);
+     *   2*N*log(2*tan(f1)/w) = log(d1-1);
+     *
+     * Expand out the logs and solve for N to get
+     *
+     *   N = 1/2*log((d1-1)/(d0-1))/log(tan(f1)/tan(f0))
+     *
+     * With this value of N, we can find w:
+     *
+     *   w = 2*tan(f0/2)/(d0-1)^(1/(2*N))
+     *
+     */
+    N: 1/2*log((d1-1)/(d0-1))/log(tan(f1/2)/tan(f0/2)),
+    print("initial N = ", N),
+    N: ceiling(N),
+    w: 2*tan(f1/2)/(d1-1)^(1/(2*N)),
+    print("w = ", w, "N = ", N),
+
+    /*
+     * The poles, s, of the Butterworth filter are at
+     *
+     *   s = w * (-1)^(1/(2*N))
+     *
+     * and we only want the poles in the left half plane.  The roots are
+     *
+     *   w*exp(%i*%pi/(2*N) + 2*%i*%pi*k/(2*N))
+     *
+     * for k = 0, 1,...,2*N-1
+     *
+     */
+    phase: 0,
+    if evenp(N) then phase: %i*%pi/(2*N),
+    print("phase = ", phase),
+    limit: N,
+    if evenp(N) then limit: N - 1,
+    roots: float(makelist(rectform(w*exp(phase+2*%i*%pi*k/(2*N))), k, 0, limit)),
+    print("roots: ", roots),
+    /*
+     * Of these roots, find the ones with negative real part.
+     */
+    poles: [],
+    map(lambda([s], if is(realpart(s) < 0) then poles:cons(s,poles)), roots),
+    print("poles: ", poles),
+    /*
+     * Form quadratics using these poles:
+     */
+    if oddp(N) then
+      Ha: cons(s-poles[1], map(lambda([r], expand(s^2-2*realpart(r)*s+cabs(r)^2)), rest(poles)))
+    else
+      Ha: map(lambda([r], expand(expand(s^2-2*realpart(r)*s+cabs(r)^2))), poles),
+    /*
+     * Compute the tranfer function
+     */
+    /*return(float(w^N)/apply("*", Ha))*/
+    return([w, N, w^N, Ha])
+  );
+
+bilinear_xfrm(p, z) :=
+  block([order : hipow(p, s)],
+    /*
+     *
+     * The bilinear transformation we want to apply is
+     *
+     *   s = 2/T*(1-z)/(1+z)
+     *
+     * We can use T = 1 because, we've normalized everything already.
+     *
+     * For a first order term, of the form 1/(s+a), we have
+     *
+     *   subst(s=2*(1-z1)/(1+z1), 1/(s+a)) =
+     *     (z1+1)/((a-2)*z1+a+2)
+     *
+     * Divide everything through by (a+2):
+     *
+     *   (1+z1)/(a+2)/(1 + (a-2)/(a+2)*z1)
+     *
+     * For a second order of the form
+     *
+     *   1/(s^2+b*s+c)
+     *
+     * the bilinear transformation is
+     *
+     *   (1+z1)^2/((c-2*b+4)*z1^2+(2*c-8)*z1+c+2*b+4)
+     *
+     * Divide everything by a0 = c+2*b+4 to get
+     *
+     *   (1+z1)^2/a0/(1 + (2*c-8)/a0*z1 + (c-2*b+4)/a0*z1^2)
+     *
+     */
+    if is(equal(order, 1)) then
+      block([a: coeff(p, s, 0),
+             a0],
+        a0: a+2,
+        return((1+z)/a0/(1+(a-2)/a0*z))
+      )
+    else
+      block([b: coeff(p, s, 1),
+             c: coeff(p, s, 0),
+             a0],
+        a0: c+2*b+4,
+        return((1+z)^2/a0/(1 + (2*c-8)/a0*z + (c-2*b+4)/a0*z^2))
+      )
+  );
+
+apply_bilinear(Ha,z) := map(lambda([p], bilinear_xfrm(p, z)), Ha);
+
+webaudio_xfrm(p,z) :=
+  block([top: num(p),
+         bot: denom(p),
+         order],
+    /*
+     * WebAudio's digital lowpass filter is defined by
+     *
+     *  (b0 + b1/z + b2/z^2)/(a0 + a1/z + a2/z^2);
+     *
+     * with
+     *
+     *  b0 = (1 - cos(w0))/2
+     *  b1 = (1 - cos(w0))
+     *  b2 = (1 - cos(w0))/2
+     *  a0 = 1 + alpha
+     *  a1 = -2*cos(w0)
+     *  a2 = 1 - alpha
+     *
+     * It's obvious that the numerator is actually
+     *
+     *   (1-cos(w0))/2*(1+1/z)^2;
+     *
+     * If the denominator is 1 + b/z + c/z^2, we can derive the values
+     * for alpha and w0
+     *
+     *   b = -2*cos(w0)/(1+alpha)
+     *   c = (1-alpha)/(1+alpha)
+     *
+     * Thus
+     *
+     *   alpha = (1-c)/(1+c);
+     *   w0 = %pi - acos((1+alpha)*b/2);
+     *
+     * Finally, alpha = sin(w0)/(2*Q) so
+     *
+     *   Q = sin(w0)/2/alpha
+     */
+    order: hipow(bot, z),
+    if is(equal(order, 1)) then
+      return(p)
+    else
+      block([b: coeff(bot, z, 1),
+             c: coeff(bot, z, 2),
+             alpha, w0, gain],
+        alpha: (1-c)/(1+c),
+        w0: float(%pi-acos((1+alpha)*b/2)),
+        gain: coeff(expand(top), z, 0) / ((1 - cos(w0)) / 2),
+        return(['w0 = w0, 'Q = sin(w0)/2/alpha, 'gain = gain])
+      )
+    );
+   
+apply_webaudio(pl,z) :=
+  map(lambda([p], webaudio_xfrm(p, z)), pl);
+
+butterworth(passband, stopband, passdB, stopdB, sampleRate) :=
+  block([core: butterworth_core(passband, stopband, passdB, stopdB, sampleRate),
+         bilinear, xfrm],
+
+    bilinear: apply_bilinear(core[4], 'z),
+    xfrm: core[3]*apply("*", bilinear),
+    return([subst(z=1/z, xfrm),
+            bilinear,
+            [core[3], apply_webaudio(bilinear, z)]])
+  );
