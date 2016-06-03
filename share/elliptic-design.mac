@@ -1,0 +1,67 @@
+design(fp, fs, Gp, Gs) :=
+block([wp: 2*%pi*fp,
+       ws: 2*%pi*fs,
+       ep: sqrt(1/Gp^2 - 1),
+       es: sqrt(1/Gs^2 - 1)],
+  print("ep, es = ", ep, es),
+  k: wp/ws,
+  k1: ep/es,
+  print("k, k1 = ", k, k1),
+  K: elliptic_kc(k*k),
+  Kp: elliptic_kc(1-k^2),
+  print("K, K' = ", K, Kp),
+  K1: elliptic_kc(k1*k1),
+  K1p: elliptic_kc(1-k1^2),
+  print("K1, K1' = ", K1, K1p),
+  N: (K1p/K1)/(Kp/K),
+  print("N = ", N, ceiling(N)),
+  N: ceiling(N),
+
+  /*k: ellipdeg(N, K1, K1p),*/
+  k: ellipdeg(N, K1, K1p),
+  K: elliptic_kc(k*k),
+  print("new k = ", k, "K = ", K),
+
+
+  fs_new: fp/k,
+  print("fs_new = ", fs_new),
+  L: floor(N/2),
+  r: N - 2*L,
+  zeta_i:  makelist(jacobi_cd((2*n-1)/N*K, k*k), n, 1, L),
+  print("zeta_i = ", zeta_i),
+
+  za: map(lambda([z], float(wp*%i/(k*z))), zeta_i),
+  print("za = ", za),
+
+  v0: -%i*inverse_jacobi_sn(%i/ep, k1*k1)/N/K1,
+  print("v0 = ", v0),
+  pa: expand(float(makelist(wp*%i*jacobi_cd(expand(((2*n-1)/N-%i*v0)*K), k*k),n,1,L))),
+  pa0: float(wp*%i*jacobi_sn(%i*v0*K, k*k)),
+  print("pa = ", pa),
+  print("pa0 = ", pa0),
+
+  H: map(lambda([z,p],
+           (1-2*realpart(1/z)*s+cabs(1/z)^2*s^2)/(1-2*realpart(1/p)*s+cabs(1/p)^2*s^2)),
+      za, pa),
+  if is(equal(r,0)) then
+    H: cons(Gp, H)
+  else
+    H: cons(1/(1 -realpart(1/pa0)*s), H),
+
+  H
+);
+
+ellipdeg(N, K1, K1p) :=
+block([q: float(exp(-%pi*K1p/K1/N))],
+  /*
+   * q = exp(-%pi*K'/K), q1 = exp(-%pi*K1'/K1)
+   * q = q1^(1/N)
+   *
+   * k = 4*sqrt(q)*F^2
+   *
+   * F = sum(q^(m*(m+1)), m, 0, inf)/(1+2*sum(q^(m*m),m,1,inf)
+   *
+   * Summing up to m = 7 is good enough in practice.
+   */
+  4*sqrt(q)*(sum(q^(m*(m+1)),m,0,10)/(1+2*sum(q^(m*m),m,1,10)))^2
+);
