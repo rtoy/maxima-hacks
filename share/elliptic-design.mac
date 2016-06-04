@@ -490,8 +490,8 @@ block([wpass: float(2*%pi*fpass/Fs),
       G: map(lambda([zz,pp], (1-pp)/(1-zz)), z, p),
       H: map(lambda([zz,pp, gg],
                     cabs(gg)^2
-                    *(1-2*realpart(zz)*'z1+cabs(zz)*'z1^2)
-                    /(1-2*realpart(pp)*'z1+cabs(pp)*'z1^2)),
+                    *(1-2*realpart(zz)*'z1+cabs(zz)^2*'z1^2)
+                    /(1-2*realpart(pp)*'z1+cabs(pp)^2*'z1^2)),
              z, p, G)
     ),
   if is(equal(mod(N,2), 1)) then
