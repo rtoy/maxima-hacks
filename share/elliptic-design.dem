@@ -1,0 +1,57 @@
+/*
+ * Filter design paramters:
+ */
+"Passband frequency (Hz)";
+fp: 4;
+"Stopband frequency (Hz)";
+fs: 4.5;
+"Minimum passband gain";
+Gp: 0.95;
+"Maximum stopband gain";
+Gs: 0.05;
+"Attentuations";
+Ap: -20*log(Gp)/log(10),numer;
+As: -20*log(Gs)/log(10),numer;
+
+"Butterworth filter";
+b: analog_lowpass_filter(fp, fs, Ap, As, "butterworth");
+"Butterworth magnitude response";
+plot2d(apply("*",cabs(subst(s=2*%pi*%i*f,rhs(b[4])))), [f,0,10]);
+
+"Chebyshev-1 filter (pass band ripple)";
+c1: analog_lowpass_filter(fp, fs, Ap, As, "cheby-1");
+"Chebyshev-1 magnitude response";
+plot2d(apply("*",cabs(subst(s=2*%pi*%i*f,rhs(c1[4])))), [f,0,10]);
+
+"Chebshev-2 filter (stop band ripple)";
+c2: analog_lowpass_filter(fp, fs, Ap, As, "cheby-2");
+"Chebyshev-2 magnitude response";
+plot2d(apply("*",cabs(subst(s=2*%pi*%i*f,rhs(c2[4])))), [f,0,10]);
+
+"Elliptic filter";
+e: analog_lowpass_filter(fp, fs, Ap, As, "elliptic");
+"Elliptic magnitude response";
+plot2d(apply("*",cabs(subst(s=2*%pi*%i*f,rhs(e[4])))), [f,0,10]);
+
+"Digital filter design, sampling frequency (Hz)";
+Fs: 20;
+"Digital Butterworth filter";
+db: digital_lowpass_filter(fp, fs, Ap, As, Fs, "butterworth");
+"Digital Butterworth magnitude response";
+plot2d(apply("*", cabs(subst(z1=exp(-2*%pi*%i*f/Fs), db))), [f, 0, 10]);
+
+"Digital Chebyshev-1 filter";
+dc1: digital_lowpass_filter(fp, fs, Ap, As, Fs, "cheby-1");
+"Digital Chebyshev-1 magnitude response";
+plot2d(apply("*", cabs(subst(z1=exp(-2*%pi*%i*f/Fs), dc1))), [f, 0, 10]);
+
+"Digital Chebyshev-2 filter";
+dc2: digital_lowpass_filter(fp, fs, Ap, As, Fs, "cheby-2");
+"Digital Chebyshev-2 magnitude response";
+plot2d(apply("*", cabs(subst(z1=exp(-2*%pi*%i*f/Fs), dc2))), [f, 0, 10]);
+
+"Digital Elliptic filter";
+de: digital_lowpass_filter(fp, fs, Ap, As, Fs, "elliptic");
+"Digital Elliptic magnitude response";
+plot2d(apply("*", cabs(subst(z1=exp(-2*%pi*%i*f/Fs), de))), [f, 0, 10]);
+
