@@ -68,13 +68,112 @@ block([q: float(exp(-%pi*K1p/K1/N))],
 
 
 /*
+ * Find poles and zeroes of an analog lowpass filter
+ *
+ *   fp, fs = passband and stopband frequencies in Hz
+ *   Ap, As = passband and stopband attenuations in dB
+ *   type   = "butter", "cheby-1", "cheby-2", "elliptic" for
+ *            Butterworth, Chebyshev-1, Chebyshev-2, or elliptic
+ *            filters, respectively.
+ *
+ * Returns an list of the form [N, z, [pa0, pa]] where
+ *
+ *   N    = filter order
+ *   za   = zeroes of the filter, if any,
+ *   pa0  = first order pole, if any
+ *   pa   = second order poles, if any
+ *
+ */
+find_lowpass_roots(fp, fs, Ap, As, type) :=
+block([numer: true,
+       Wp: float(2*%pi*fp),
+       Ws: float(2*%pi*fs),
+       ep: float(sqrt(10^(Ap/10)-1)),
+       es: float(sqrt(10^(As/10)-1)),
+       k, k1, N, K, Kp, K1, K1p, r, L, u, za, pa, pa0],
+  /* Selectivity and discrimination parameters */
+  k: Wp/Ws,
+  k1: ep/es,
+
+  print("Wp, Ws = ", Wp, Ws),
+  print("ep, es = ", ep, es),
+  print("k, k1  = ", k, k1),
+
+  /* Determine order of filter to meet or exceed the requirements */
+
+  if is(type = "butterworth") then
+    N: ceiling(log(1/k1)/log(1/k))
+  elseif is(type = "cheby-1") then
+    N: ceiling(acosh(1/k1)/acosh(1/k))
+  elseif is(type = "cheby-2") then
+    block([],
+      N: ceiling(acosh(1/k1)/acosh(1/k)),
+      /* Recompute k to satisfy degree equation */
+      k: 1/cosh(acosh(1/k1) / N)
+    )
+  elseif is(type = "elliptic") then
+    block([],
+      K: elliptic_kc(k*k),
+      Kp: elliptic_kc(1-k^2),
+      K1: elliptic_kc(k1*k1),
+      K1p: elliptic_kc(1-k1*k1),
+      N: ceiling((K1p/K1) / (Kp/K)),
+      /* Recompute k to satisfy degree equation */
+      k: ellipdeg(N, K1, K1p),
+      K: elliptic_kc(k*k)
+    )
+  else
+    error("Unknown filter type: ", type),
+
+  L: floor(N/2),
+  r: N - 2*L,
+  u: makelist((2*n-1)/N, n, 1, L),
+
+  /* Determine poles and zeroes (if any) */
+  if is(type = "butterworth") then
+    block([],
+      za: [],
+      /*
+       * Use either Ws,es or Wp,ep here.  If we choose Ws,es, the
+       * resulting filter exceeds the stopband requirement; if Wp,ep,
+       * it exceeds the passband requirements.
+       */
+      pa: expand(%i * Ws / es^(1/N) * map(lambda([uu], float(exp(%i*uu*%pi/2))), u)),
+      pa0: -Ws / es^(1/N)
+    )
+  elseif is(type = "cheby-1") then
+    block([v0: asinh(1/ep) / (N*%pi/2)],
+      za: [],
+      pa: expand(%i * Wp * map(lambda([uu], float(cos((uu-%i*v0)*%pi/2))), u)),
+      pa0: -Wp * float(sinh(v0*%pi/2))
+    )
+  elseif is(type = "cheby-2") then
+    block([v0: asinh(es) / (N*%pi/2)],
+      za: rectform(Wp / (%i*k*map(lambda([uu], float(cos(uu*%pi/2))), u))),
+      pa: rectform(Wp / (%i*k*map(lambda([uu], float(cos((uu-%i*v0)*%pi/2))), u))),
+      pa0: -Wp / float((k*sinh(v0*%pi/2)))
+    )
+  else
+    block([v0: -%i*inverse_jacobi_sn(%i/ep, k1*k1)/N/K1],
+      za: Wp*%i/(k*map(lambda([uu], jacobi_cd(uu*K, k*k)), u)),
+      pa: Wp*%i*map(lambda([uu], jacobi_cd(expand((uu-%i*v0)*K), k*k)), u),
+      pa0: Wp*%i*jacobi_sn(%i*v0*K, k*k)
+    ),
+
+  [N, expand(za), [pa0, expand(pa)]]
+);
+
+
+/*
  * Lowpass analog filter design
  *
  * design_lowpass_filter(fp, fs, Ap, As, type)
  *
  *   fp, fs = passband and stopband frequencies in Hz
  *   Ap, As = passband and stopband attenuations in dB
- *   type   = 0,1,2,3 for Butterworth, Chebyshev-1, Chebyshev-2, Elliptic
+ *   type   = "butter", "cheby-1", "cheby-2", "elliptic" for
+ *            Butterworth, Chebyshev-1, Chebyshev-2, or elliptic
+ *            filters, respectively.
  *
  * Returns an list of the form [N = N, B = B, A = A] where
  *
@@ -84,8 +183,52 @@ block([q: float(exp(-%pi*K1p/K1/N))],
  *
  * where L = floor(N/2)
  */
- 
-design_lowpass_filter(fp, fs, Ap, As, type) :=
+
+analog_lowpass_filter(fp, fs, Ap, As, type) :=
+block([pz: find_lowpass_roots(fp, fs, Ap, As, type),
+       N, r, pa, za, A, B, Gp, H],
+  N: pz[1],
+  za: pz[2],
+  pa0: pz[3][1],
+  pa: pz[3][2],
+  L: floor(N/2),
+  r: mod(N, 2),
+
+  /* Determine coefficient of each section */
+  A: map(lambda([p], [1, -2*realpart(1/p), cabs(1/p)^2]), pa),
+
+  if is(equal(r,1)) then
+    A: cons([1, -realpart(1/pa0), 0], A),
+
+  if is(type = "cheby-2") or is(type = "elliptic") then
+    B: map(lambda([z], [1, -2*realpart(1/z), cabs(1/z)^2]), za)
+  else
+    B: makelist([1,0,0], n, 1, L),
+
+  if is(equal(r,1)) then
+    B: cons([1,0,0], B),
+
+  Gp: 10^(-Ap/20),
+
+  print("B = ", B),
+/*
+  if is(equal(type, 1)) or is(equal(type, 3)) then
+    B[1][1]: Gp^(1-r),
+*/
+  
+  print("B = ", B),
+  print("A = ", A),
+  H: map(lambda([b,a], (b[1]+b[2]*'s+b[3]*'s^2)/(a[1]+a[2]*'s+a[3]*'s^2)), B, A),
+
+  if is(type = "cheby-1") or is(type = "elliptic") then
+    H: cons(Gp^(1-r), H)
+  else
+    H: cons(1, H),
+
+  ['N = N, 'B = B, 'A = A, 'H = H]
+);
+
+design_lowpass_filter0(fp, fs, Ap, As, type) :=
 block([numer: true,
        Wp: float(2*%pi*fp),
        Ws: float(2*%pi*fs),
@@ -166,7 +309,7 @@ block([numer: true,
 
   print("B = ", B),
   if is(equal(type, 1)) or is(equal(type, 3)) then
-    B[1][1] = Gp^(1-r),
+    B[1][1]: Gp^(1-r),
 
   print("B = ", B),
   print("A = ", A),
@@ -174,6 +317,7 @@ block([numer: true,
 
   ['N = N, 'B = B, 'A = A, 'H = H]
 );
+
 
 /*
  * Some examples
@@ -295,3 +439,43 @@ plot2d(cabs(subst(s=2*%pi*%i*f, apply("*", rhs(ef[4])))), [f,0,10]);
 
  * You might want to do a semilog or log-log plot.
 */
+
+digital_lowpass_filter(fpass, fstop, Ap, As, Fs, type) :=
+block([wpass: float(2*%pi*fpass/Fs),
+       wstop: float(2*%pi*fstop/Fs),
+       omega_p, omega_s, apz],
+  omega_p: tan(wpass/2),
+  omega_s: tan(wstop/2),
+  apz: find_lowpass_roots(omega_p, omega_s, Ap, As, type),
+  N: apz[1],
+  za: apz[2],
+  pa0: apz[3][1],
+  pa: apz[3][2],
+
+  p0: (1+pa0)/(1-pa0),
+  z: map(lambda([zz], (1+zz)/(1-zz)), za),
+  p: map(lambda([pp], (1+pp)/(1-pp)), pa),
+
+  G0: (1-p0)/2,
+
+  if is(equal(type, 0)) then
+    block([],
+      /* Butterworth filters have no zeroes */
+      G: map(lambda([pp], (1-pp)/2), p),
+      H: map(lambda([pp, gg],
+                    cabs(gg)^2*(1+z1^2)/(1-2*realpart(pp)*'z1+cabs(pp)*'z1^2)),
+             p, G)
+    )
+  elseif is(equal(type, 3)) then
+    block([],
+      G: map(lambda([zz,pp], (1-pp)/(1-zz)), z, p),
+      H: map(lambda([zz,pp, gg],
+                    cabs(gg)^2
+                    *(1-2*realpart(zz)*'z1+cabs(zz)*'z1^2)
+                    /(1-2*realpart(pp)*'z1+cabs(pp)*'z1^2)),
+             z, p, G)
+    ),
+  if is(equal(mod(N,2), 1)) then
+   H: cons(G0*(1+'z1)/(1-p0*'z1), H),
+  H
+);
