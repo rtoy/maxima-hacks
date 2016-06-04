@@ -90,7 +90,7 @@ block([numer: true,
        Ws: float(2*%pi*fs),
        ep: float(sqrt(10^(Ap/10)-1)),
        es: float(sqrt(10^(As/10)-1)),
-       k, k1, N, K, Kp, K1, K1p, r, L, u, za, pa, pa0],
+       k, k1, N, K, Kp, K1, K1p, r, L, u, za, pa, pa0, Gp, H0],
   /* Selectivity and discrimination parameters */
   k: Wp/Ws,
   k1: ep/es,
@@ -160,7 +160,12 @@ block([numer: true,
       pa0: Wp*%i*jacobi_sn(%i*v0*K, k*k)
     ),
 
-  [N, expand(za), [pa0, expand(pa)]]
+  Gp: 10^(-Ap/20),
+  if is(type = "cheby-1") or is(type = "elliptic") then
+    H0: Gp^(1-r)
+  else
+    H0: 1,
+  [N, expand(za), [pa0, expand(pa)], H0]
 );
 
 
@@ -208,8 +213,6 @@ block([pz: find_lowpass_roots(fp, fs, Ap, As, type),
   if is(equal(r,1)) then
     B: cons([1,0,0], B),
 
-  Gp: 10^(-Ap/20),
-
   print("B = ", B),
 /*
   if is(equal(type, 1)) or is(equal(type, 3)) then
@@ -221,7 +224,7 @@ block([pz: find_lowpass_roots(fp, fs, Ap, As, type),
   H: map(lambda([b,a], (b[1]+b[2]*'s+b[3]*'s^2)/(a[1]+a[2]*'s+a[3]*'s^2)), B, A),
 
   if is(type = "cheby-1") or is(type = "elliptic") then
-    H: cons(Gp^(1-r), H)
+    H: cons(pz[4], H)
   else
     H: cons(1, H),
 
@@ -443,14 +446,30 @@ plot2d(cabs(subst(s=2*%pi*%i*f, apply("*", rhs(ef[4])))), [f,0,10]);
 digital_lowpass_filter(fpass, fstop, Ap, As, Fs, type) :=
 block([wpass: float(2*%pi*fpass/Fs),
        wstop: float(2*%pi*fstop/Fs),
-       omega_p, omega_s, apz],
+       omega_p, omega_s, apz, N, za, p0, z, p, G0, H],
+  /*
+   * Apply bilinear transformation.  The full transform (as given by
+   * Oppenheim and Schafer) is
+   *
+   *   s = 2/T*(1-z^-1)/(1+z^-1)
+   *   T*omega/2 = tan(w/2)
+   *
+   * In the following, we use T = 2.  (Oppenheim and Schafer uses T = 1).
+   */
+
+  /*
+   * Warp the frequencies and find the poles and zeroes for the
+   * corresponding analog filter with those frequencies and the given
+   * attenuations.
+   */
   omega_p: tan(wpass/2),
   omega_s: tan(wstop/2),
-  apz: find_lowpass_roots(omega_p, omega_s, Ap, As, type),
+  apz: find_lowpass_roots(omega_p/(2*%pi), omega_s/(2*%pi), Ap, As, type),
   N: apz[1],
   za: apz[2],
   pa0: apz[3][1],
   pa: apz[3][2],
+  H0: apz[4],
 
   p0: (1+pa0)/(1-pa0),
   z: map(lambda([zz], (1+zz)/(1-zz)), za),
@@ -458,15 +477,15 @@ block([wpass: float(2*%pi*fpass/Fs),
 
   G0: (1-p0)/2,
 
-  if is(equal(type, 0)) then
+  if is(type = "butterworth") or is(type = "cheby-1") then
     block([],
       /* Butterworth filters have no zeroes */
       G: map(lambda([pp], (1-pp)/2), p),
       H: map(lambda([pp, gg],
-                    cabs(gg)^2*(1+z1^2)/(1-2*realpart(pp)*'z1+cabs(pp)*'z1^2)),
+                    cabs(gg)^2*(1+z1)^2/(1-2*realpart(pp)*'z1+cabs(pp)^2*'z1^2)),
              p, G)
     )
-  elseif is(equal(type, 3)) then
+  elseif is(type = "cheby-2") or is(type = "elliptic") then
     block([],
       G: map(lambda([zz,pp], (1-pp)/(1-zz)), z, p),
       H: map(lambda([zz,pp, gg],
@@ -477,5 +496,5 @@ block([wpass: float(2*%pi*fpass/Fs),
     ),
   if is(equal(mod(N,2), 1)) then
    H: cons(G0*(1+'z1)/(1-p0*'z1), H),
-  H
+  H: cons(H0, H)
 );
