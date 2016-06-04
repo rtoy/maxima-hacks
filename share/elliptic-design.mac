@@ -65,3 +65,233 @@ block([q: float(exp(-%pi*K1p/K1/N))],
    */
   4*sqrt(q)*(sum(q^(m*(m+1)),m,0,10)/(1+2*sum(q^(m*m),m,1,10)))^2
 );
+
+
+/*
+ * Lowpass analog filter design
+ *
+ * design_lowpass_filter(fp, fs, Ap, As, type)
+ *
+ *   fp, fs = passband and stopband frequencies in Hz
+ *   Ap, As = passband and stopband attenuations in dB
+ *   type   = 0,1,2,3 for Butterworth, Chebyshev-1, Chebyshev-2, Elliptic
+ *
+ * Returns an list of the form [N = N, B = B, A = A] where
+ *
+ *   N    = filter order
+ *   B    = list of L+1 lists of length 3, for the numerator coefficients
+ *   A    = list of L+1 lists of length 3, for the denominator coefficients
+ *
+ * where L = floor(N/2)
+ */
+ 
+design_lowpass_filter(fp, fs, Ap, As, type) :=
+block([numer: true,
+       Wp: float(2*%pi*fp),
+       Ws: float(2*%pi*fs),
+       ep: float(sqrt(10^(Ap/10)-1)),
+       es: float(sqrt(10^(As/10)-1)),
+       k, k1, N, K, Kp, K1, K1p, r, L, A, B, H],
+  /* Selectivity and discrimination parameters */
+  k: Wp/Ws,
+  k1: ep/es,
+
+  /* Determine order of filter to meet or exceed the requirements */
+
+  if is(equal(type, 0)) then
+    N: ceiling(log(1/k1)/log(1/k))
+  elseif is(equal(type, 1)) then
+    N: ceiling(acosh(1/k1)/acosh(1/k))
+  elseif is(equal(type, 2)) then
+    block([],
+      N: ceiling(acosh(1/k1)/acosh(1/k)),
+      /* Recompute k to satisfy degree equation */
+      k: 1/cosh(acosh(1/k1) / N)
+    )
+  else
+    block([],
+      K: elliptic_kc(k*k),
+      Kp: elliptic_kc(1-k^2),
+      K1: elliptic_kc(k1*k1),
+      K1p: elliptic_kc(1-k1*k1),
+      N: ceiling((K1p/K1) / (Kp/K)),
+      /* Recompute k to satisfy degree equation */
+      k: ellipdeg(N, K1, K1p),
+      K: elliptic_kc(k*k)
+    ),
+
+  L: floor(N/2),
+  r: N - 2*L,
+  u: makelist((2*n-1)/N, n, 1, L),
+
+  /* Determine poles and zeroes (if any) */
+  if is(equal(type,0)) then
+    block([],
+      pa: %i * Wp / ep^(1/N) * map(lambda([uu], float(exp(%i*uu*%pi/2))), u),
+      pa0: -Wp / ep^(1/N)
+    )
+  elseif is(equal(type,1)) then
+    block([v0: asinh(1/ep) / (N*%pi/2)],
+      pa: %i * Wp * map(lambda([uu], float(cos((uu-%i*v0)*%pi/2))), u),
+      pa0: -Wp * float(sinh(v0*%pi/2))
+    )
+  elseif is(equal(type,2)) then
+    block([v0: asinh(es) / (N*%pi/2)],
+      za: Wp / (%i*k*map(lambda([uu], float(cos(uu*%pi/2))), u)),
+      pa: Wp / (%i*k*map(lambda([uu], float(cos((uu-%i*v0)*%pi/2))), u)),
+      pa0: -Wp / float((k*sinh(v0*%pi/2)))
+    )
+  else
+    block([v0: -%i*inverse_jacobi_sn(%i/ep, k1*k1)/N/K1],
+      za: Wp*%i/(k*map(lambda([uu], jacobi_cd(uu*K, k*k)), u)),
+      pa: Wp*%i*map(lambda([uu], jacobi_cd(expand((uu-%i*v0)*K), k*k)), u),
+      pa0: Wp*%i*jacobi_sn(%i*v0*K, k*k)
+    ),
+
+  /* Determine coefficient of each section */
+  A: map(lambda([p], [1, -2*realpart(1/p), cabs(1/p)^2]), pa),
+
+  if is(equal(r,1)) then
+    A: cons([1, -realpart(1/pa0), 0], A),
+
+  if is(equal(type, 2)) or is(equal(type, 3)) then
+    B: map(lambda([z], [1, -2*realpart(1/z), cabs(1/z)^2]), za)
+  else
+    B: makelist([1,0,0], n, 1, L),
+
+  if is(equal(r,1)) then
+    B: cons([1,0,0], B),
+
+  Gp: 10^(-Ap/20),
+
+  print("B = ", B),
+  if is(equal(type, 1)) or is(equal(type, 3)) then
+    B[1][1] = Gp^(1-r),
+
+  print("B = ", B),
+  print("A = ", A),
+  H: map(lambda([b,a], (b[1]+b[2]*'s+b[3]*'s^2)/(a[1]+a[2]*'s+a[3]*'s^2)), B, A),
+
+  ['N = N, 'B = B, 'A = A, 'H = H]
+);
+
+/*
+ * Some examples
+ *
+ * The filter specifications are
+ *
+ * fp = 4 Hz, Gp = 0.95, Ap = -20*log10(Gp) = 0.4455 dB,
+ * fs = 4.5 Hz, Gs = 0.05, As = -20*log10(Gs) = 26.0206 dB
+ *
+ * First, a Butterworth design:
+
+b: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),0);
+
+[N = 35,
+ B = [[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],
+      [1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],
+      [1,0,0]],
+ A = [[1,0.03854373684362356,0],[1,0.003458516429128125,0.001485619649870505],
+      [1,0.01034770334667176,0.001485619649870505],
+      [1,0.01715357664121904,0.001485619649870505],
+      [1,0.02382133942279095,0.001485619649870505],
+      [1,0.0302973067860513,0.001485619649870505],
+      [1,0.03652933804959827,0.001485619649870505],
+      [1,0.04246725656207281,0.001485619649870505],
+      [1,0.04806325369505204,0.001485619649870505],
+      [1,0.05327227377001422,0.001485619649870505],
+      [1,0.05805237682016997,0.001485619649870505],
+      [1,0.06236507626641451,0.001485619649870505],
+      [1,0.0661756487886329,0.001485619649870505],
+      [1,0.06945341389745656,0.001485619649870505],
+      [1,0.07217198095552395,0.001485619649870505],
+      [1,0.07430946165937505,0.001485619649870505],
+      [1,0.07584864627120076,0.001485619649870505],
+      [1,0.0767771421815325,0.001485619649870505]],
+ H = [1/(0.03854373684362356*s+1),
+      1/(0.001485619649870505*s^2+0.003458516429128125*s+1),
+      1/(0.001485619649870505*s^2+0.01034770334667176*s+1),
+      1/(0.001485619649870505*s^2+0.01715357664121904*s+1),
+      1/(0.001485619649870505*s^2+0.02382133942279095*s+1),
+      1/(0.001485619649870505*s^2+0.0302973067860513*s+1),
+      1/(0.001485619649870505*s^2+0.03652933804959827*s+1),
+      1/(0.001485619649870505*s^2+0.04246725656207281*s+1),
+      1/(0.001485619649870505*s^2+0.04806325369505204*s+1),
+      1/(0.001485619649870505*s^2+0.05327227377001422*s+1),
+      1/(0.001485619649870505*s^2+0.05805237682016997*s+1),
+      1/(0.001485619649870505*s^2+0.06236507626641451*s+1),
+      1/(0.001485619649870505*s^2+0.0661756487886329*s+1),
+      1/(0.001485619649870505*s^2+0.06945341389745656*s+1),
+      1/(0.001485619649870505*s^2+0.07217198095552395*s+1),
+      1/(0.001485619649870505*s^2+0.07430946165937505*s+1),
+      1/(0.001485619649870505*s^2+0.07584864627120076*s+1),
+      1/(0.001485619649870505*s^2+0.0767771421815325*s+1)]]
+
+ * The result is 35-th order filter (!)
+ *
+ * Next a Chebyshev-1 design:
+
+c1: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),1);
+
+[N = 10,B = [[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0]],
+ A = [[1,0.002271607181954544,0.001568308167915504],
+      [1,0.008038935002948966,0.001912415984602738],
+      [1,0.01941285365852509,0.002965070275528186],
+      [1,0.05441135436881506,0.006595371522238274],
+      [1,0.2478991064237764,0.02710726159111835]],
+ H = [1/(0.001568308167915504*s^2+0.002271607181954544*s+1),
+      1/(0.001912415984602738*s^2+0.008038935002948966*s+1),
+      1/(0.002965070275528186*s^2+0.01941285365852509*s+1),
+      1/(0.006595371522238274*s^2+0.05441135436881506*s+1),
+      1/(0.02710726159111835*s^2+0.2478991064237764*s+1)]]
+
+ * The result is a 10-th order filter
+ *
+ * Next a Chebyshev-2 design:
+
+c2: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),2);
+
+[N = 10,
+ B = [[1,0,0.001236835309463572],[1,0,0.001006546374991718],
+      [1,0,6.339310517832612e-4],[1,0,2.613157285748041e-4],
+      [1,0,3.102679410295022e-5]],
+ A = [[1,0.004202631631156962,0.001417269059681602],
+      [1,0.01219651202795688,0.001186980125209748],
+      [1,0.01899651284936425,8.143648020012917e-4],
+      [1,0.0239370026365881,4.417494787928346e-4],
+      [1,0.02653437182683852,2.114605443209809e-4]],
+ H = [(0.001236835309463572*s^2+1)/(0.001417269059681602*s^2
+                                   +0.004202631631156962*s+1),
+      (0.001006546374991718*s^2+1)/(0.001186980125209748*s^2
+                                   +0.01219651202795688*s+1),
+      (6.339310517832612e-4*s^2+1)/(8.143648020012917e-4*s^2
+                                   +0.01899651284936425*s+1),
+      (2.613157285748041e-4*s^2+1)/(4.417494787928346e-4*s^2
+                                   +0.0239370026365881*s+1),
+      (3.102679410295022e-5*s^2+1)/(2.114605443209809e-4*s^2
+                                   +0.02653437182683852*s+1)]]
+
+ * Again, a 10-th order filter.
+ *
+ * Finally, an elliptic filter:
+
+ef: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),3);
+
+[N = 5,B = [[1,0,0],[1,0,0.001273095059598257],[1,0,7.386431464063551e-4]],
+ A = [[1,0.06591214985854515,0],[1,0.003122118093250606,0.001543259312007929],
+      [1,0.02527796748077036,0.002007739358702555]],
+ H = [1/(0.06591214985854515*s+1),
+      (0.001273095059598257*s^2+1)/(0.001543259312007929*s^2
+                                   +0.003122118093250606*s+1),
+      (7.386431464063551e-4*s^2+1)/(0.002007739358702555*s^2
+                                   +0.02527796748077036*s+1)]]
+ *
+ * A 5-th order filter.
+ *
+ *
+ * You can plot frequency response like so, using the elliptic filter:
+
+plot2d(cabs(subst(s=2*%pi*%i*f, apply("*", rhs(ef[4])))), [f,0,10]);
+
+ * You might want to do a semilog or log-log plot.
+*/
