@@ -1,6 +1,25 @@
+/*
+ * Analog and digital Filter design
+ *
+ * Design analog Butterworth, Chebyshev-1, Chebyshev-2 and elliptic
+ * filters from the given pass band, stop band, and attenuations.
+ *
+ * Corresonding digital filters can also be designed.
+ *
+ * References:
+ *  [1] "Lecture Notes on Elliptic Filter Design", Sophocles
+ *      J. Orfanidis. Dept. Of Electrical & Computer Engineering,
+ *      Rutgers.
+ *  [2] Digital Signal Processing, Oppenheim and Schafer
+ *
+ */
+
 ellipdeg(N, K1, K1p) :=
 block([q: float(exp(-%pi*K1p/K1/N))],
   /*
+   * Solve the elliptic filter degree equation for k given N, K1, and
+   * K1p.
+   *
    * q = exp(-%pi*K'/K), q1 = exp(-%pi*K1'/K1)
    * q = q1^(1/N)
    *
@@ -8,7 +27,8 @@ block([q: float(exp(-%pi*K1p/K1/N))],
    *
    * F = sum(q^(m*(m+1)), m, 0, inf)/(1+2*sum(q^(m*m),m,1,inf)
    *
-   * Summing up to m = 7 is good enough in practice.
+   * Summing up to m = 10 is good enough in practice.  Should we be
+   * more careful?
    */
   4*sqrt(q)*(sum(q^(m*(m+1)),m,0,10)/(1+2*sum(q^(m*m),m,1,10)))^2
 );
@@ -23,12 +43,13 @@ block([q: float(exp(-%pi*K1p/K1/N))],
  *            Butterworth, Chebyshev-1, Chebyshev-2, or elliptic
  *            filters, respectively.
  *
- * Returns an list of the form [N, z, [pa0, pa]] where
+ * Returns an list of the form [N, z, [pa0, pa], H0] where
  *
  *   N    = filter order
  *   za   = zeroes of the filter, if any,
  *   pa0  = first order pole, if any
  *   pa   = second order poles, if any
+ *   H0   = Overall gain term
  *
  */
 find_lowpass_roots(fp, fs, Ap, As, type) :=
@@ -41,10 +62,6 @@ block([numer: true,
   /* Selectivity and discrimination parameters */
   k: Wp/Ws,
   k1: ep/es,
-
-  print("Wp, Ws = ", Wp, Ws),
-  print("ep, es = ", ep, es),
-  print("k, k1  = ", k, k1),
 
   /* Determine order of filter to meet or exceed the requirements */
 
@@ -106,10 +123,11 @@ block([numer: true,
       pa: Wp*%i*map(lambda([uu], jacobi_cd(expand((uu-%i*v0)*K), k*k)), u),
       pa0: Wp*%i*jacobi_sn(%i*v0*K, k*k)
     ),
-
-  Gp: 10^(-Ap/20),
+  
   if is(type = "cheby-1") or is(type = "elliptic") then
-    H0: Gp^(1-r)
+    block([Gp: 10^(-Ap/20)],
+      H0: Gp^(1-r)
+    )
   else
     H0: 1,
   [N, expand(za), [pa0, expand(pa)], H0]
@@ -119,7 +137,7 @@ block([numer: true,
 /*
  * Lowpass analog filter design
  *
- * design_lowpass_filter(fp, fs, Ap, As, type)
+ * analog_lowpass_filter(fp, fs, Ap, As, type)
  *
  *   fp, fs = passband and stopband frequencies in Hz
  *   Ap, As = passband and stopband attenuations in dB
@@ -160,14 +178,6 @@ block([pz: find_lowpass_roots(fp, fs, Ap, As, type),
   if is(equal(r,1)) then
     B: cons([1,0,0], B),
 
-  print("B = ", B),
-/*
-  if is(equal(type, 1)) or is(equal(type, 3)) then
-    B[1][1]: Gp^(1-r),
-*/
-  
-  print("B = ", B),
-  print("A = ", A),
   H: map(lambda([b,a], (b[1]+b[2]*'s+b[3]*'s^2)/(a[1]+a[2]*'s+a[3]*'s^2)), B, A),
 
   if is(type = "cheby-1") or is(type = "elliptic") then
@@ -188,7 +198,7 @@ block([pz: find_lowpass_roots(fp, fs, Ap, As, type),
  *
  * First, a Butterworth design:
 
-b: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),0);
+b: analog_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),0);
 
 [N = 35,
  B = [[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0],
@@ -234,7 +244,7 @@ b: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/l
  *
  * Next a Chebyshev-1 design:
 
-c1: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),1);
+c1: analog_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),1);
 
 [N = 10,B = [[1,0,0],[1,0,0],[1,0,0],[1,0,0],[1,0,0]],
  A = [[1,0.002271607181954544,0.001568308167915504],
@@ -252,7 +262,7 @@ c1: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/
  *
  * Next a Chebyshev-2 design:
 
-c2: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),2);
+c2: analog_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),2);
 
 [N = 10,
  B = [[1,0,0.001236835309463572],[1,0,0.001006546374991718],
@@ -278,7 +288,7 @@ c2: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/
  *
  * Finally, an elliptic filter:
 
-ef: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),3);
+ef: analog_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/log(10)),3);
 
 [N = 5,B = [[1,0,0],[1,0,0.001273095059598257],[1,0,7.386431464063551e-4]],
  A = [[1,0.06591214985854515,0],[1,0.003122118093250606,0.001543259312007929],
@@ -297,8 +307,28 @@ ef: design_lowpass_filter(4,4.5,float(-20*log(0.95)/log(10)),float(-20*log(.05)/
 plot2d(cabs(subst(s=2*%pi*%i*f, apply("*", rhs(ef[4])))), [f,0,10]);
 
  * You might want to do a semilog or log-log plot.
-*/
+ */
 
+
+/*
+ * Digital lowpass filter design
+ *
+ * digital_lowpass_filter(fpass, fstop, Ap, As, Fs, type)
+ *
+ *   fpass  = passband frequency (Hz)
+ *   fstop  = stopband frequency (Hz)
+ *   Ap     = passband attenuation (dB)
+ *   As     = stopband attenuation (dB)
+ *   Fs     = sampling frequency (Hz)
+ *   type   = "butter", "cheby-1", "cheby-2", "elliptic" for
+ *            Butterworth, Chebyshev-1, Chebyshev-2, or elliptic
+ *            filters, respectively.
+ *
+ * Returns the transfer function of the digital filter with z1 =
+ * z^(-1).  It is a list an overall gain, a possible linear term, and
+ * at quadratic sections.
+ *
+ */
 digital_lowpass_filter(fpass, fstop, Ap, As, Fs, type) :=
 block([wpass: float(2*%pi*fpass/Fs),
        wstop: float(2*%pi*fstop/Fs),
