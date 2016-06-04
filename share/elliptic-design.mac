@@ -262,3 +262,161 @@ block([wpass: float(2*%pi*fpass/Fs),
    H: cons(G0*(1+'z1)/(1-p0*'z1), H),
   H: cons(H0, H)
 );
+
+/*
+ * From a linear or quadratic factor of the transfer function,
+ * determine the appropriate parameters for a WebAudio filter
+ * (IIRFilter or BiquadFilter).  An IIRFilter is only used if the
+ * factor is a first-order term.
+ *
+ * For an IIRFilter, the result is of the form
+ *
+ *   ['iir, [b0, b1,....], [a0, a1,....]]
+ *
+ * For a quadratic factor, the result is
+ *
+ *   ['biquad, ['type, "type"], ['gain, g], ['f0, f0], ['Q, Q]]
+ *
+ * The f0 and Q parts determine the frequency and Q parameters of a
+ * BiquadFilter with a type of type.
+ */
+webaudio_param(factor, Fs, type) :=
+block([top:expand(num(factor)),
+       bot:denom(factor)],
+  if is(type = "butterworth") or is(type = "cheby-1") then
+    block([order: hipow(bot, z1),
+           b: coeff(bot, z1, 1),
+           c: coeff(bot, z1, 2),
+           g: coeff(expand(top), z1, 0)],
+      print("factor = ", factor),
+      print("g = ", g),
+      print("b, c = ", b, c),
+      if is(equal(order, 1)) then
+        block([g: coeff(expand(top), z1, 0)],
+          ['iir, [g, g], [1, b]]
+        )
+      else
+        block([alpha: (1-c)/(1+c),
+               a0, b0, w0],
+	  /*
+	   * Butterworth and Chebyshev-1 filters look something like
+	   *
+	   *   g*(1+z1)^2/(1 - b*z1 + c*z1^2)
+	   *
+	   * The Webaudio lowpass filter is
+	   *
+	   *   (b0+b1*z1+b2*z1^2)/(a0+a1*z1+a2*z1^2)
+	   *      = b0*(1+z1)^2/(a0+a1*z1+a2*z1^2)
+	   *   
+	   * with
+	   *
+	   *   b0 = (1-cos(w0))/2
+	   *   b1 = 2*b1
+	   *   b2 = b0
+	   *   a0 = 1 + alpha
+	   *   a1 = -2*cos(w0)
+	   *   a2 = 1 - alpha
+	   *
+	   * where w0 = 2*%pi*f0/Fs, alpha = sin(w0)/2/10^(Q/20)
+	   *
+	   * So
+	   *
+	   *   b0/a0*(1+z1)^2/(1 + a1/a0*z1 + a2/a0*z1^2)
+	   *
+	   * Compare to the factor we have, we get
+	   *
+	   *   b = -a1/a0 = 2*cos(w0)/(1+alpha)
+	   *   c = a2/a0 = (1-alpha)/(1+alpha)
+	   *
+	   * This implies
+	   *
+	   *   alpha = (1-c)/(1+c)
+	   *   w0 = acos(b*(1+alpha)/2)
+	   *
+	   * and
+	   *
+	   *   f0 = w0*Fs/(2*%pi)
+	   *   Q = 20*log10(sin(w0)/2/alpha);
+	   *
+	   * Now to handle the numerator.  In general g is not b0/a0; we
+	   * need to multiply b0/a0 by a factor f to get g.  Then
+	   *
+	   *   f = g*a0/b0
+	   */
+	   
+	   w0: acos(b*(1+alpha)/2),
+	   a0: 1 + alpha,
+	   b0: (1-cos(w0))/2,
+	   ['biquad, ['type, "lowpass"],
+                     ['gain, g*a0/b0],
+                     ['f0, float(w0*Fs/(2*%pi))],
+                     ['Q, float(20*log(sin(w0)/2/alpha)/log(10))]]
+      )
+    )
+  elseif is(type = "cheby-2") or is(type = "elliptic") then
+    block([order: hipow(bot, z1),
+           b: coeff(bot, z1, 1),
+           c: coeff(bot, z1, 2),
+           g: coeff(expand(top), z1, 0)],
+    if is(equal(order, 1)) then
+        block([g: coeff(expand(top), z1, 0)],
+          ['iir, [g, g], [1, b]]
+        )
+    else 
+      block([alpha: (1-c)/(1+c),
+           a0, b0, w0],
+	/*
+	 * For a Chebyshev-2 filter, the filter looks something like
+	 *
+	 *   g*(1-k*z1+z1^2)/(1-b*z1+c*z1^2)
+	 *
+	 * This is a notch filter
+	 *
+	 *   b0 = 1
+	 *   b1 = -2*cos(w0)
+	 *   b2 = 1
+	 *   a0 = 1 + alpha
+	 *   a1 = -2*cos(w0)
+	 *   a2 = 1 - alpha
+	 *
+         * So
+         *
+         *   (1/a0+b1/a0*z1+1/a0*z1^2)/(1 + a1/a0*z1 + a2/a0*z1^2)
+         *     =1/a0*(1 + b1*z1 + z1^2)/(1 + a1/a0*z1 + a2/a0*z1^2)
+	 * So
+	 *
+	 *   b = -a1/a0 = 2*cos(w0)/(1+alpha)
+	 *   c = a2/a0 = (1-alpha)/(1+alpha)
+	 *
+         *   and g = f*1/a0 or f = g*a0
+	 */
+	 w0: acos(b*(1+alpha)/2),
+	 a0: 1 + alpha,
+	 ['biquad, ['type, "notch"],
+                   ['gain, g*a0],
+                   ['f0, float(w0*Fs/(2*%pi))],
+                   ['Q, sin(w0)/2/alpha]]
+      )
+    )
+  else
+    error("Unknown type: " + type)
+);
+
+/*
+ * From result from digital_lowpass_filter determine appropriate
+ * parameters for a sequence of WebAudio filters (IIRFilter or
+ * BiquadFilter) that will produce the desired response.
+ *
+ * The result is a list of the form
+ *
+ *  [total_gain, [filter1, filter2, ...]]
+ */
+convert_webaudio(H, Fs, type) :=
+block([result: map(lambda([q], webaudio_param(q, Fs, type)), rest(H)),
+       total_gain: H[1],
+       r: []],
+  for term in result do
+    if is(equal(term[1], 'biquad)) then
+      total_gain: total_gain * assoc('gain, rest(term)),
+  [total_gain, result]
+);
